@@ -730,17 +730,12 @@ class ChangeEngineTest {
         nacos.namespaces.add("dev")
         // Simulate: 001-add.csv was applied (ADD redis.yml); rollback should delete it
         nacos.configs["dev/DEFAULT_GROUP/redis.yml"] = NacosConfig("redis.yml", "DEFAULT_GROUP", "dev", "key: val", ConfigType.YAML)
-        // rollbackData is empty array — ADD has no pre-existing snapshot to restore
-        val record = ChangeRecord(1L, "001-add.csv", "abc", Instant.now(), appliedBy, 0, ExecutionStatus.SUCCESS, "[]")
+        // rollbackData contains the ADD sentinel — produced by serializeSnapshots when action=ADD
+        // The sentinel has content="\u0000ADD_ROLLBACK" to signal "delete on rollback"
+        val sentinel = """[{"dataId":"redis.yml","group":"DEFAULT_GROUP","namespace":"dev","content":"\u0000ADD_ROLLBACK","type":"YAML"}]"""
+        val record = ChangeRecord(1L, "001-add.csv", "abc", Instant.now(), appliedBy, 0, ExecutionStatus.SUCCESS, sentinel)
         changelog.saveRecord(record)
 
-        // Store the added DataID in rollbackData so the engine knows to delete it on rollback
-        // Convention: ADD rollback entries have a sentinel "action":"ADD_ROLLBACK"
-        // The engine uses the originalChangeSets stored at apply-time (passed via rollbackData)
-        // Simpler approach: engine stores script's changeSets JSON alongside snapshots for rollback
-        // See ChangeEngine implementation note below.
-        // This test verifies the config is gone after rollback of an ADD.
-        // Implementation: store original ADD change sets in rollbackData as { "added": [...], "snapshots": [...] }
         engine().rollback(Path.of("."), count = 1).getOrThrow()
 
         assertNull(nacos.configs["dev/DEFAULT_GROUP/redis.yml"], "ADD should be deleted on rollback")
