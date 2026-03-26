@@ -4,10 +4,6 @@ plugins {
     kotlin("plugin.serialization")
 }
 
-kotlin {
-    jvmToolchain(21)
-}
-
 dependencies {
     implementation(project(":nacosbase-core"))
 
@@ -19,15 +15,12 @@ dependencies {
     implementation("com.mysql:mysql-connector-j:8.3.0")
 
     implementation("com.charleskorn.kaml:kaml:0.61.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-core:1.7.3")
+
+    implementation("org.json:json:20240303")
 
     implementation("com.github.doyaaaaaken:kotlin-csv-jvm:1.10.0")
 
     testImplementation(kotlin("test"))
     testImplementation("org.testcontainers:mysql:1.20.4")
     testImplementation("org.testcontainers:junit-jupiter:1.20.4")
-}
-
-tasks.test {
-    useJUnitPlatform()
 }

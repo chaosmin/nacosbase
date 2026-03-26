@@ -5,7 +5,19 @@ plugins {
 }
 
 allprojects {
+    version = project.findProperty("nacosbase.version") as String
+
     repositories {
         mavenCentral()
+    }
+}
+
+subprojects {
+    afterEvaluate {
+        extensions.findByType<org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension>()
+            ?.jvmToolchain(21)
+        tasks.withType<Test> {
+            useJUnitPlatform()
+        }
     }
 }
