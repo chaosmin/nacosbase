@@ -1,3 +1,4 @@
+// settings.gradle.kts
 pluginManagement {
     repositories {
         gradlePluginPortal()
@@ -13,4 +14,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "nacosbase"
 
-include("nacosbase-core")
+include("nacosbase-core", "nacosbase-infra", "nacosbase-cli")
