@@ -49,7 +49,9 @@ class ChangeEngine(
                         require(existing == null) {
                             "DataID '${cs.dataId}' already exists in Nacos. Use MODIFY to update it."
                         }
-                        val added = NacosConfig(cs.dataId, cs.group, cs.namespace, cs.content!!, cs.type!!)
+                        val content = requireNotNull(cs.content) { "content required for ADD action on '${cs.dataId}'" }
+                        val type = requireNotNull(cs.type) { "type required for ADD action on '${cs.dataId}'" }
+                        val added = NacosConfig(cs.dataId, cs.group, cs.namespace, content, type)
                         nacos.publish(added)
                         // Sentinel marks this ADD for deletion on rollback
                         rollbackSnapshots.add(added.copy(content = "\u0000ADD_ROLLBACK"))
@@ -59,7 +61,9 @@ class ChangeEngine(
                             .find { it.dataId == cs.dataId && it.group == cs.group }
                             ?: error("DataID '${cs.dataId}' not found in Nacos. Cannot MODIFY.")
                         rollbackSnapshots.add(existing)
-                        nacos.publish(existing.copy(content = cs.content!!, type = cs.type!!))
+                        val content = requireNotNull(cs.content) { "content required for MODIFY action on '${cs.dataId}'" }
+                        val type = requireNotNull(cs.type) { "type required for MODIFY action on '${cs.dataId}'" }
+                        nacos.publish(existing.copy(content = content, type = type))
                     }
                     Action.DELETE -> {
                         val existing = nacos.fetchAll(cs.namespace)
@@ -176,11 +180,11 @@ class ChangeEngine(
         return Json.parseToJsonElement(json).jsonArray.map { el ->
             val obj = el.jsonObject
             NacosConfig(
-                dataId    = obj["dataId"]!!.jsonPrimitive.content,
-                group     = obj["group"]!!.jsonPrimitive.content,
-                namespace = obj["namespace"]!!.jsonPrimitive.content,
-                content   = obj["content"]!!.jsonPrimitive.content,
-                type      = ConfigType.valueOf(obj["type"]!!.jsonPrimitive.content),
+                dataId    = requireNotNull(obj["dataId"]) { "rollbackData JSON missing 'dataId'" }.jsonPrimitive.content,
+                group     = requireNotNull(obj["group"]) { "rollbackData JSON missing 'group'" }.jsonPrimitive.content,
+                namespace = requireNotNull(obj["namespace"]) { "rollbackData JSON missing 'namespace'" }.jsonPrimitive.content,
+                content   = requireNotNull(obj["content"]) { "rollbackData JSON missing 'content'" }.jsonPrimitive.content,
+                type      = ConfigType.valueOf(requireNotNull(obj["type"]) { "rollbackData JSON missing 'type'" }.jsonPrimitive.content),
             )
         }
     }

@@ -162,6 +162,29 @@ class ChangeEngineTest {
         assertTrue(nacos.configs.isEmpty(), "diff must not write to Nacos")
     }
 
+    // --- baseline ---
+
+    @Test fun `baseline returns ADD change sets for all configs in namespace`() {
+        nacos.namespaces.add("dev")
+        nacos.configs["dev/DEFAULT_GROUP/redis.yml"] =
+            NacosConfig("redis.yml", "DEFAULT_GROUP", "dev", "port: 6379", ConfigType.YAML)
+        nacos.configs["dev/DEFAULT_GROUP/app.properties"] =
+            NacosConfig("app.properties", "DEFAULT_GROUP", "dev", "timeout=3000", ConfigType.PROPERTIES)
+
+        val result = engine().baseline("dev").getOrThrow()
+
+        assertEquals(2, result.size)
+        assertTrue(result.all { it.action == Action.ADD })
+        assertTrue(result.any { it.dataId == "redis.yml" && it.content == "port: 6379" })
+        assertTrue(result.any { it.dataId == "app.properties" && it.content == "timeout=3000" })
+    }
+
+    @Test fun `baseline fails when namespace does not exist`() {
+        val result = engine().baseline("nonexistent")
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()!!.message!!.contains("namespace"))
+    }
+
     // --- status ---
 
     @Test fun `status returns applied and pending scripts`() {
