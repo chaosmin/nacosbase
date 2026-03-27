@@ -107,7 +107,6 @@ class ConfigLoaderTest {
     fun `load returns failure for non-existent file`() {
         val result = ConfigLoader.load(java.nio.file.Path.of("/nonexistent/nacosbase.yml"))
         assertFalse(result.isSuccess, "Expected failure for missing file")
-        assertTrue(result.isFailure)
     }
 
     @Test
@@ -127,11 +126,10 @@ class ConfigLoaderTest {
         val tmpFile = Files.createTempFile("nacosbase-interp-test", ".yml").toFile()
         try {
             tmpFile.writeText(yaml)
-            // NACOS_ADDR is unlikely to be set in the test environment; default is used
-            val result = ConfigLoader.load(tmpFile.toPath())
+            // Controlled envLookup: NACOS_ADDR not set → default value used
+            val result = ConfigLoader.load(tmpFile.toPath()) { null }
             assertTrue(result.isSuccess, "Expected successful parse: ${result.exceptionOrNull()}")
             val config = result.getOrThrow()
-            // Should have used the default value
             assertEquals("192.168.1.1:8848", config.nacos.serverAddr)
         } finally {
             tmpFile.delete()

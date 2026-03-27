@@ -7,9 +7,12 @@ object ConfigLoader {
 
     private val INTERPOLATION_REGEX = Regex("""\$\{([^}:]+)(?::-([^}]*))?\}""")
 
-    fun load(configPath: Path = Path.of("nacosbase.yml")): Result<NacosbaseConfig> = runCatching {
+    fun load(
+        configPath: Path = Path.of("nacosbase.yml"),
+        envLookup: (String) -> String? = System::getenv,
+    ): Result<NacosbaseConfig> = runCatching {
         val raw = configPath.toFile().readText()
-        val interpolated = interpolate(raw)
+        val interpolated = interpolate(raw, envLookup)
         Yaml.default.decodeFromString(NacosbaseConfig.serializer(), interpolated)
     }
 
@@ -18,7 +21,7 @@ object ConfigLoader {
         envLookup: (String) -> String? = System::getenv,
     ): String = INTERPOLATION_REGEX.replace(input) { match ->
         val varName = match.groupValues[1]
-        val hasDefault = match.value.contains(":-")
+        val hasDefault = match.groups[2] != null
         val default = match.groupValues[2]
 
         envLookup(varName)
