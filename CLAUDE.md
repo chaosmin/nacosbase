@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | DATABASECHANGELOG | Execution log (tracks applied scripts + checksums) |
 | Checksum validation | Tamper detection for applied scripts |
 
-Built with Kotlin JVM, Gradle 9.2, JDK 21. Currently contains one module: `nacosbase-core`.
+Built with Kotlin JVM, Gradle 9.2, JDK 21.
 
 ## Build & Test Commands
 
@@ -30,55 +30,47 @@ Use the Gradle wrapper (no local Gradle installation required):
 
 # Run tests for a specific module
 ./gradlew :nacosbase-core:test
+./gradlew :nacosbase-infra:test
+./gradlew :nacosbase-cli:test
 
 # Run a single test class
-./gradlew :nacosbase-core:test --tests "com.nacosbase.core.VersionTest"
-
-# Clean and rebuild
-./gradlew clean build
+./gradlew :nacosbase-core:test --tests "com.nacosbase.core.engine.ChangeEngineTest"
 
 # Compile only (no tests)
 ./gradlew compileKotlin
+
+# Build fat-jar CLI
+./gradlew :nacosbase-cli:shadowJar
+# Output: nacosbase-cli/build/libs/nacosbase-0.1.0.jar
 ```
 
 On Windows, use `gradlew.bat` instead of `./gradlew`.
 
 ## Architecture
 
-### Module Structure
+### Module Structure (strict one-way dependency chain)
 
 ```
-nacosbase/                        # Root multi-project build
-├── nacosbase-core/               # Core library: Nacos client, change set engine,
-│   └── src/                      # execution log, format validation
-│       ├── main/kotlin/com/nacosbase/core/
-│       └── test/kotlin/com/nacosbase/core/
-└── settings.gradle.kts           # Module declarations
+nacosbase-cli → nacosbase-infra → nacosbase-core
 ```
+
+- **`nacosbase-core`** — Pure Kotlin domain layer: models, port interfaces, `ChangeEngine`, `ConfigValidator`. Zero IO dependencies.
+- **`nacosbase-infra`** — Infrastructure adapters: `NacosClientAdapter` (Nacos SDK), `MysqlChangeLogAdapter` (Exposed ORM), `CsvScriptLoader` (kotlin-csv), `ConfigLoader` (kaml).
+- **`nacosbase-cli`** — CLI fat-jar (Clikt): six commands (`baseline`, `update`, `status`, `diff`, `validate`, `rollback`). Assembles layers via `AppContext`.
 
 ### Key Domain Concepts
 
-- **Baseline**: Snapshot of all current Nacos configs, exported as the starting point.
-- **Change script (CSV)**: Human-readable file declaring add/modify/delete operations on Nacos DataIDs.
-- **Execution log**: Persistent record of applied scripts with checksums; enables idempotency and tamper detection.
-- **Namespace**: Nacos namespace maps to an environment (dev/test/staging/prod); change sets are scoped per namespace.
+- **Baseline**: Snapshot of all current Nacos configs, exported as a CSV with all `ADD` rows.
+- **Change script (CSV)**: Files named `{N}-{description}.csv`, sorted and executed by numeric prefix ASC.
+- **Execution log**: MySQL `nacosbase_changelog` table tracks applied scripts with checksums; `nacosbase_lock` table provides distributed locking.
+- **Idempotency**: SUCCESS+matching checksum → skip; SUCCESS+mismatch → halt (tamper detected); FAILED → retry; ROLLED_BACK → re-apply.
 
-### Build Configuration
+### Configuration
 
-- **Root `build.gradle.kts`**: Applies the Kotlin JVM plugin and MavenCentral repository to all subprojects.
-- **Module `build.gradle.kts`**: JVM toolchain targets JDK 21, tests use JUnit Platform.
-- **`gradle.properties`**: Daemon enabled, parallel builds, build caching, and configuration cache all enabled.
-
-### Adding New Modules
-
-1. Create the module directory with a `build.gradle.kts`.
-2. Register it in `settings.gradle.kts` with `include("new-module-name")`.
-3. Plugins and MavenCentral are inherited from the root build — no need to redeclare.
-
-### Package Conventions
-
-All source code uses reverse domain naming under `com.nacosbase.*`. Module-specific packages live under `com.nacosbase.<module-name>`.
+`nacosbase.yml` is the config file (git-tracked). Passwords must use `${ENV_VAR}` syntax — never literal values. The config loader interpolates env vars before YAML parsing.
 
 ### Testing
 
-Tests use `kotlin("test")` which provides JUnit 5 assertions and the JUnit Platform runner. Test source mirrors the main source package structure.
+- `nacosbase-core`: Pure unit tests with in-memory fakes in `com.nacosbase.core.fake`.
+- `nacosbase-infra`: Testcontainers integration tests (MySQL). Tests skip automatically if Docker is unavailable.
+- `nacosbase-cli`: Clikt test runner. Commands accept an `engineFactory` constructor param for injecting fake engines in tests.

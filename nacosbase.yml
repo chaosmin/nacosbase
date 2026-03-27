@@ -1,0 +1,14 @@
+nacos:
+  serverAddr: 127.0.0.1:8848
+  username: nacos
+  password: ${NACOS_PASSWORD}          # must come from env var
+  defaultNamespace: dev
+
+datasource:
+  url: jdbc:mysql://localhost:3306/nacosbase
+  username: root
+  password: ${DB_PASSWORD}             # must come from env var
+
+changelog:
+  scriptsDir: ./changelogs
+  appliedBy: ${USER:-nacosbase}        # env var with fallback
