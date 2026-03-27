@@ -13,7 +13,6 @@ dependencies {
     implementation(project(":nacosbase-core"))
     implementation(project(":nacosbase-infra"))
     implementation("com.github.ajalt.clikt:clikt:4.4.0")
-    implementation("org.jetbrains.exposed:exposed-core:0.55.0")
 
     testImplementation(kotlin("test"))
 }
