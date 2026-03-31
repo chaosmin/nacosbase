@@ -9,4 +9,5 @@ data class ChangeSet(
     val type: ConfigType?,
     val description: String?, // per-row description for audit trail
     val operator: String? = null,
+    val targetKey: String? = null, // APPEND only: the dot-notation key whose value is the target list
 )

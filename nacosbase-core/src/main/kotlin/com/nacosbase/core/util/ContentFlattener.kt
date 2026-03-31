@@ -96,6 +96,265 @@ object ContentFlattener {
         }
     }
 
+    // ── APPEND support ───────────────────────────────────────────────────────
+
+    /**
+     * Checks whether the value at [key] (dot-notation) in [content] can be appended to:
+     * - List or scalar → OK
+     * - Nested map → Failure (cannot append to an object)
+     * - Key not found → Failure
+     * Only YAML and JSON are supported; TEXT and PROPERTIES return Failure.
+     */
+    fun checkAppendable(content: String, type: ConfigType, key: String): Result<Unit> = when (type) {
+        ConfigType.YAML -> {
+            val root = Yaml().load<Any?>(content) ?: return Result.failure(IllegalArgumentException("Empty YAML config"))
+            val value = resolveYamlPath(root, key.split("."))
+                ?: return Result.failure(IllegalArgumentException("Key '$key' not found"))
+            if (value is Map<*, *>)
+                Result.failure(IllegalArgumentException("'$key' is a nested object; APPEND is not allowed on maps"))
+            else
+                Result.success(Unit)
+        }
+        ConfigType.JSON -> {
+            val value = resolveJsonPath(Json.parseToJsonElement(content), key.split("."))
+                ?: return Result.failure(IllegalArgumentException("Key '$key' not found"))
+            if (value is JsonObject)
+                Result.failure(IllegalArgumentException("'$key' is a nested object; APPEND is not allowed on objects"))
+            else
+                Result.success(Unit)
+        }
+        else -> Result.failure(UnsupportedOperationException("APPEND is not supported for $type"))
+    }
+
+    /**
+     * Appends [newValue] to the list at [key] (dot-notation) in [content].
+     * - If the current value is a list, the item is added at the end.
+     * - If the current value is a scalar, it is promoted to `[oldValue, newValue]`.
+     * - If the current value is a nested map, returns Failure.
+     * - If the key does not exist, returns Failure.
+     */
+    fun appendToKey(content: String, type: ConfigType, key: String, newValue: String): Result<String> = when (type) {
+        ConfigType.YAML -> appendToYamlKey(content, key, newValue)
+        ConfigType.JSON -> appendToJsonKey(content, key, newValue)
+        else -> Result.failure(UnsupportedOperationException("APPEND is not supported for $type"))
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun appendToYamlKey(content: String, key: String, newValue: String): Result<String> {
+        val root = Yaml().load<Any?>(content) ?: return Result.failure(IllegalArgumentException("Empty YAML config"))
+        if (root !is Map<*, *>) return Result.failure(IllegalArgumentException("YAML root is not a map"))
+        return appendInYamlMap(root as Map<String, Any>, key.split("."), newValue)
+            .map { Yaml(yamlDumperOptions()).dump(sortMapKeys(it)).trimEnd('\n') }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun appendInYamlMap(
+        map: Map<String, Any>,
+        keys: List<String>,
+        newValue: String,
+    ): Result<LinkedHashMap<String, Any>> {
+        val head = keys[0]
+        if (!map.containsKey(head))
+            return Result.failure(IllegalArgumentException("Key '${keys.joinToString(".")}' not found"))
+        val updated = LinkedHashMap(map)
+        if (keys.size == 1) {
+            updated[head] = when (val cur = map[head]) {
+                is List<*>   -> cur.toMutableList<Any?>().also { it.add(newValue) }
+                is Map<*, *> -> return Result.failure(
+                    IllegalArgumentException("'$head' is a nested object; APPEND is not allowed on maps"))
+                null -> listOf(newValue)
+                else -> listOf(cur, newValue)
+            }
+        } else {
+            val child = map[head]
+            if (child !is Map<*, *>)
+                return Result.failure(IllegalArgumentException("'$head' is not a map"))
+            appendInYamlMap(child as Map<String, Any>, keys.drop(1), newValue)
+                .onFailure { return Result.failure(it) }
+                .onSuccess  { updated[head] = it }
+        }
+        return Result.success(updated)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun sortMapKeys(map: Map<String, Any>): Map<String, Any> =
+        map.entries.sortedBy { it.key }.associate { (k, v) ->
+            k to if (v is Map<*, *>) sortMapKeys(v as Map<String, Any>) else v
+        }
+
+    private fun resolveYamlPath(obj: Any?, keys: List<String>): Any? {
+        if (keys.isEmpty()) return obj
+        if (obj !is Map<*, *>) return null
+        val child = obj[keys[0]] ?: return null
+        return resolveYamlPath(child, keys.drop(1))
+    }
+
+    private fun appendToJsonKey(content: String, key: String, newValue: String): Result<String> =
+        runCatching {
+            appendInJsonObject(Json.parseToJsonElement(content).jsonObject, key.split("."), newValue)
+                .map { it.toString() }
+        }.getOrElse { Result.failure(it) }
+
+    private fun appendInJsonObject(obj: JsonObject, keys: List<String>, newValue: String): Result<JsonObject> {
+        val head = keys[0]
+        if (!obj.containsKey(head))
+            return Result.failure(IllegalArgumentException("Key '${keys.joinToString(".")}' not found"))
+        return if (keys.size == 1) {
+            when (val cur = obj[head]!!) {
+                is JsonArray  -> Result.success(rebuildJsonObject(obj, head,
+                    JsonArray(cur + JsonPrimitive(newValue))))
+                is JsonObject -> Result.failure(
+                    IllegalArgumentException("'$head' is a nested object; APPEND is not allowed on objects"))
+                else -> Result.success(rebuildJsonObject(obj, head,
+                    JsonArray(listOf(cur, JsonPrimitive(newValue)))))
+            }
+        } else {
+            val child = obj[head]
+            if (child !is JsonObject)
+                return Result.failure(IllegalArgumentException("'$head' is not an object"))
+            appendInJsonObject(child, keys.drop(1), newValue).map { rebuildJsonObject(obj, head, it) }
+        }
+    }
+
+    private fun rebuildJsonObject(obj: JsonObject, replaceKey: String, replaceWith: JsonElement): JsonObject =
+        buildJsonObject {
+            obj.entries.sortedBy { it.key }.forEach { (k, v) ->
+                put(k, if (k == replaceKey) replaceWith else v)
+            }
+        }
+
+    private fun resolveJsonPath(element: JsonElement, keys: List<String>): JsonElement? {
+        if (keys.isEmpty()) return element
+        if (element !is JsonObject) return null
+        val child = element[keys[0]] ?: return null
+        return resolveJsonPath(child, keys.drop(1))
+    }
+
+    // ── DELETE list-value support ─────────────────────────────────────────────
+
+    /**
+     * Checks whether [value] can be removed from the list at [key] (dot-notation) in [content]:
+     * - Key exists and its value is a list that contains [value] → OK
+     * - Key is not a list → Failure
+     * - [value] is not present in the list → Failure
+     * Only YAML and JSON are supported.
+     */
+    fun checkListValueRemovable(content: String, type: ConfigType, key: String, value: String): Result<Unit> =
+        when (type) {
+            ConfigType.YAML -> {
+                val root = Yaml().load<Any?>(content)
+                    ?: return Result.failure(IllegalArgumentException("Empty YAML config"))
+                val cur = resolveYamlPath(root, key.split("."))
+                    ?: return Result.failure(IllegalArgumentException("Key '$key' not found"))
+                when {
+                    cur !is List<*> ->
+                        Result.failure(IllegalArgumentException("'$key' is not a list; cannot delete a specific value"))
+                    cur.none { it?.toString() == value } ->
+                        Result.failure(IllegalArgumentException("Value '$value' not found in list '$key'"))
+                    else -> Result.success(Unit)
+                }
+            }
+            ConfigType.JSON -> {
+                val cur = resolveJsonPath(Json.parseToJsonElement(content), key.split("."))
+                    ?: return Result.failure(IllegalArgumentException("Key '$key' not found"))
+                when {
+                    cur !is JsonArray ->
+                        Result.failure(IllegalArgumentException("'$key' is not a list; cannot delete a specific value"))
+                    cur.none { it is JsonPrimitive && it.content == value } ->
+                        Result.failure(IllegalArgumentException("Value '$value' not found in list '$key'"))
+                    else -> Result.success(Unit)
+                }
+            }
+            else -> Result.failure(UnsupportedOperationException("List value deletion is not supported for $type"))
+        }
+
+    /**
+     * Removes [value] from the list at [key] (dot-notation) in [content].
+     * If the list becomes empty the key is removed entirely.
+     * If the entire config becomes empty an empty string is returned (caller should delete the config).
+     */
+    fun removeListValue(content: String, type: ConfigType, key: String, value: String): Result<String> = when (type) {
+        ConfigType.YAML -> removeYamlListValue(content, key, value)
+        ConfigType.JSON -> removeJsonListValue(content, key, value)
+        else -> Result.failure(UnsupportedOperationException("List value deletion is not supported for $type"))
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun removeYamlListValue(content: String, key: String, value: String): Result<String> {
+        val root = Yaml().load<Any?>(content) ?: return Result.failure(IllegalArgumentException("Empty YAML config"))
+        if (root !is Map<*, *>) return Result.failure(IllegalArgumentException("YAML root is not a map"))
+        return removeYamlListItem(root as Map<String, Any>, key.split("."), value)
+            .map { newMap ->
+                if (newMap.isEmpty()) "" else Yaml(yamlDumperOptions()).dump(sortMapKeys(newMap)).trimEnd('\n')
+            }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun removeYamlListItem(
+        map: Map<String, Any>,
+        keys: List<String>,
+        value: String,
+    ): Result<LinkedHashMap<String, Any>> {
+        val head = keys[0]
+        if (!map.containsKey(head))
+            return Result.failure(IllegalArgumentException("Key '${keys.joinToString(".")}' not found"))
+        val updated = LinkedHashMap(map)
+        if (keys.size == 1) {
+            val cur = map[head]
+            if (cur !is List<*>)
+                return Result.failure(IllegalArgumentException("'$head' is not a list"))
+            val remaining = cur.filter { it?.toString() != value }
+            if (remaining.isEmpty()) updated.remove(head) else updated[head] = remaining
+        } else {
+            val child = map[head]
+            if (child !is Map<*, *>)
+                return Result.failure(IllegalArgumentException("'$head' is not a map"))
+            removeYamlListItem(child as Map<String, Any>, keys.drop(1), value)
+                .onFailure { return Result.failure(it) }
+                .onSuccess { childResult ->
+                    // prune empty intermediate maps
+                    if (childResult.isEmpty()) updated.remove(head) else updated[head] = childResult
+                }
+        }
+        return Result.success(updated)
+    }
+
+    private fun removeJsonListValue(content: String, key: String, value: String): Result<String> =
+        runCatching {
+            removeJsonListItem(Json.parseToJsonElement(content).jsonObject, key.split("."), value)
+                .map { it.toString() }
+        }.getOrElse { Result.failure(it) }
+
+    private fun removeJsonListItem(obj: JsonObject, keys: List<String>, value: String): Result<JsonObject> {
+        val head = keys[0]
+        if (!obj.containsKey(head))
+            return Result.failure(IllegalArgumentException("Key '${keys.joinToString(".")}' not found"))
+        return if (keys.size == 1) {
+            val cur = obj[head]!!
+            if (cur !is JsonArray)
+                return Result.failure(IllegalArgumentException("'$head' is not a list"))
+            val remaining = cur.filter { it !is JsonPrimitive || it.content != value }
+            if (remaining.isEmpty()) {
+                Result.success(buildJsonObject {
+                    obj.entries.sortedBy { it.key }.forEach { (k, v) -> if (k != head) put(k, v) }
+                })
+            } else {
+                Result.success(rebuildJsonObject(obj, head, JsonArray(remaining)))
+            }
+        } else {
+            val child = obj[head]
+            if (child !is JsonObject)
+                return Result.failure(IllegalArgumentException("'$head' is not an object"))
+            removeJsonListItem(child, keys.drop(1), value).map { childResult ->
+                if (childResult.isEmpty()) {
+                    buildJsonObject { obj.entries.sortedBy { it.key }.forEach { (k, v) -> if (k != head) put(k, v) } }
+                } else {
+                    rebuildJsonObject(obj, head, childResult)
+                }
+            }
+        }
+    }
+
     // ── YAML ─────────────────────────────────────────────────────────────────
 
     @Suppress("UNCHECKED_CAST")

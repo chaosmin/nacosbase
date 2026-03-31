@@ -79,7 +79,8 @@ ADD,redis.yml,DEFAULT_GROUP,dev,port,6379,YAML,添加 Redis 配置,hugo
 |------|------|
 | `ADD` | 若配置文件**不存在**则创建并写入指定 key；若已存在则将新 key **合并**进去——若 key 已存在则报错。 |
 | `MODIFY` | 更新已有配置文件中的指定 key——若配置文件或 key 不存在则报错，未涉及的 key 保持不变。 |
-| `DELETE` | 从已有配置中删除指定 key；所有 key 删完后整个配置文件随之删除。不填 `key`/`value` 则删除整个配置文件。配置文件或 key 不存在均报错。 |
+| `DELETE` | `value` 为空：删除整个 key。`value` 有值：从 key 对应的 list 中删除该项——若 key 不是 list 或 value 不在 list 中则报错。`key`/`value` 均不填则删除整个配置文件。配置文件或 key 不存在均报错。 |
+| `APPEND` | 向 `key` 对应的 list 尾部追加 `value`；若当前值为标量则自动升级为 list。key 对应嵌套对象时报错。每行都是独立操作（**不**合并）。 |
 
 **执行前校验：** 在应用任何变更之前，nacosbase 会将整个 CSV 中的每条操作与 Nacos 当前状态进行校验，只要有一条不满足执行条件，整个脚本就会中止，并一次性输出所有错误：
 
@@ -157,13 +158,13 @@ java -jar nacosbase-0.1.0.jar validate --scripts ./changelogs
 
 | 列名 | 是否必填 | 说明 |
 |------|----------|------|
-| `action` | 是 | `ADD`、`MODIFY` 或 `DELETE` |
+| `action` | 是 | `ADD`、`MODIFY`、`DELETE` 或 `APPEND` |
 | `dataId` | 是 | Nacos DataID |
 | `group` | 是 | Nacos group（如 `DEFAULT_GROUP`） |
 | `namespace` | 是 | Nacos 命名空间名称或 ID |
-| `key` | ADD/MODIFY/DELETE 必填 | 点分隔的 key 路径（如 `server.port`）；DELETE 整个配置文件时可留空 |
-| `value` | ADD/MODIFY 必填 | 该 key 对应的标量值 |
-| `type` | ADD/MODIFY 必填 | `YAML`、`PROPERTIES`、`JSON` 或 `TEXT` |
+| `key` | ADD/MODIFY/DELETE/APPEND 必填 | 点分隔的 key 路径（如 `server.port`）；DELETE 整个配置文件时可留空 |
+| `value` | ADD/MODIFY/APPEND 必填；DELETE 可选 | 标量值。DELETE 时若填写，则从 key 对应的 list 中删除该项，而非删除整个 key |
+| `type` | ADD/MODIFY/APPEND 必填 | `YAML`、`PROPERTIES`、`JSON` 或 `TEXT` |
 | `description` | 否 | 人类可读的变更描述 |
 | `operator` | 否 | 操作人 |
 
@@ -194,6 +195,23 @@ roles:
     accountType: EPS
   - roleName: LABEL_OWNER
     accountType: EPS
+```
+
+### APPEND 与 DELETE list 项示例
+
+```csv
+# 向 list 追加项（每行独立执行）
+APPEND,app.yml,DEFAULT_GROUP,dev,servers,192.168.1.1,YAML,添加服务器,hugo
+APPEND,app.yml,DEFAULT_GROUP,dev,servers,192.168.1.2,YAML,添加服务器,hugo
+
+# 删除 list 中的指定项
+DELETE,app.yml,DEFAULT_GROUP,dev,servers,192.168.1.1,YAML,移除服务器,hugo
+
+# 删除整个 key（value 留空）
+DELETE,app.yml,DEFAULT_GROUP,dev,timeout,,YAML,移除 key,hugo
+
+# 删除整个配置文件（key 和 value 均留空）
+DELETE,app.yml,DEFAULT_GROUP,dev,,,YAML,移除配置,hugo
 ```
 
 ## 模块结构

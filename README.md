@@ -79,7 +79,8 @@ Supported actions and their key-level semantics:
 |--------|-----------|
 | `ADD` | If the config does **not** exist, create it with the given keys. If it already exists, **merge** the new keys in — fails if any key is already present. |
 | `MODIFY` | Update the specified keys in an existing config — fails if the config or any key does not exist. Unspecified keys are preserved unchanged. |
-| `DELETE` | Remove the specified keys from an existing config. If all keys are deleted the entire config is removed. Omit `key`/`value` to delete the whole config. Fails if the config or any key does not exist. |
+| `DELETE` | If `value` is blank: remove the entire key. If `value` is set: remove that specific item from the key's list — fails if the key is not a list or the value is not present. Omit both `key` and `value` to delete the whole config. Fails if the config or key does not exist. |
+| `APPEND` | Append `value` to the list at `key`. If the current value is a scalar it is promoted to a list. Fails if the key holds a nested object. Each row is an independent operation (rows are **not** merged). |
 
 **Pre-execution validation:** before applying any changeset, nacosbase validates every operation in the CSV against the current Nacos state. If any condition cannot be satisfied, the entire script is aborted and all errors are reported at once:
 
@@ -157,13 +158,13 @@ Global options (per command):
 
 | Column | Required | Description |
 |--------|----------|-------------|
-| `action` | Yes | `ADD`, `MODIFY`, or `DELETE` |
+| `action` | Yes | `ADD`, `MODIFY`, `DELETE`, or `APPEND` |
 | `dataId` | Yes | Nacos DataID |
 | `group` | Yes | Nacos group (e.g. `DEFAULT_GROUP`) |
 | `namespace` | Yes | Nacos namespace name or ID |
-| `key` | For ADD/MODIFY/DELETE | Dot-notation key path (e.g. `server.port`). Leave blank to operate on the whole config (DELETE only). |
-| `value` | For ADD/MODIFY | The scalar value for this key |
-| `type` | For ADD/MODIFY | `YAML`, `PROPERTIES`, `JSON`, or `TEXT` |
+| `key` | For ADD/MODIFY/DELETE/APPEND | Dot-notation key path (e.g. `server.port`). Leave blank to delete the whole config (DELETE only). |
+| `value` | For ADD/MODIFY/APPEND; optional for DELETE | Scalar value. For DELETE: if set, removes that specific item from the key's list instead of the whole key. |
+| `type` | For ADD/MODIFY/APPEND | `YAML`, `PROPERTIES`, `JSON`, or `TEXT` |
 | `description` | No | Human-readable change description |
 | `operator` | No | Who is making this change |
 
@@ -194,6 +195,23 @@ roles:
     accountType: EPS
   - roleName: LABEL_OWNER
     accountType: EPS
+```
+
+### APPEND and DELETE list-value examples
+
+```csv
+# Append items to a list key (each row is independent)
+APPEND,app.yml,DEFAULT_GROUP,dev,servers,192.168.1.1,YAML,add server,hugo
+APPEND,app.yml,DEFAULT_GROUP,dev,servers,192.168.1.2,YAML,add server,hugo
+
+# Delete a specific item from a list
+DELETE,app.yml,DEFAULT_GROUP,dev,servers,192.168.1.1,YAML,remove server,hugo
+
+# Delete an entire key (value left blank)
+DELETE,app.yml,DEFAULT_GROUP,dev,timeout,,YAML,remove key,hugo
+
+# Delete the whole config (key and value both blank)
+DELETE,app.yml,DEFAULT_GROUP,dev,,,YAML,remove config,hugo
 ```
 
 ## Modules

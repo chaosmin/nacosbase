@@ -83,8 +83,28 @@ class ChangeEngine(
                         val existingKeys = ContentFlattener.flatten(existing.content, existing.type)
                             .map { it.first }.toSet()
                         ContentFlattener.flatten(cs.content, type)
-                            .filter { (k, _) -> k.isNotEmpty() && k !in existingKeys }
-                            .forEach { (k, _) -> errors.add("[$idx] $k not found"); idx++ }
+                            .filter { (k, _) -> k.isNotEmpty() }
+                            .forEach { (k, v) ->
+                                if (k !in existingKeys) {
+                                    errors.add("[$idx] $k not found"); idx++
+                                } else if (v.isNotEmpty()) {
+                                    ContentFlattener.checkListValueRemovable(existing.content, existing.type, k, v)
+                                        .onFailure { ex -> errors.add("[$idx] ${ex.message}"); idx++ }
+                                }
+                            }
+                    }
+                }
+                Action.APPEND -> {
+                    if (existing == null) {
+                        errors.add("[$idx] '${cs.dataId}' not found"); idx++
+                    } else {
+                        val targetKey = cs.targetKey
+                        if (targetKey.isNullOrBlank()) {
+                            errors.add("[$idx] key is required for APPEND"); idx++
+                        } else {
+                            ContentFlattener.checkAppendable(existing.content, existing.type, targetKey)
+                                .onFailure { ex -> errors.add("[$idx] ${ex.message}"); idx++ }
+                        }
                     }
                 }
             }
@@ -145,21 +165,44 @@ class ChangeEngine(
                             }
                         nacos.publish(existing.copy(content = ContentFlattener.assemble(merged, type), type = type))
                     }
+                    Action.APPEND -> {
+                        val existing = nacos.fetchAll(namespaceId)
+                            .find { it.dataId == cs.dataId && it.group == cs.group }
+                            ?: error("DataID '${cs.dataId}' not found in Nacos. Cannot APPEND.")
+                        rollbackSnapshots.add(existing)
+                        val targetKey = requireNotNull(cs.targetKey) { "key required for APPEND on '${cs.dataId}'" }
+                        val value = requireNotNull(cs.content) { "value required for APPEND on '${cs.dataId}'" }
+                        val newContent = ContentFlattener.appendToKey(existing.content, existing.type, targetKey, value).getOrThrow()
+                        nacos.publish(existing.copy(content = newContent))
+                    }
                     Action.DELETE -> {
                         val existing = nacos.fetchAll(namespaceId)
                             .find { it.dataId == cs.dataId && it.group == cs.group }
                             ?: error("DataID '${cs.dataId}' not found in Nacos. Cannot DELETE.")
                         rollbackSnapshots.add(existing)
                         if (cs.content != null) {
-                            // Delete specific keys from the config
-                            val keysToDelete = ContentFlattener.flatten(cs.content, cs.type ?: existing.type)
-                                .map { it.first }.filter { it.isNotEmpty() }.toSet()
-                            val remaining = ContentFlattener.flatten(existing.content, existing.type)
-                                .filter { it.first !in keysToDelete }
-                            if (remaining.isEmpty()) {
+                            val kvToDelete = ContentFlattener.flatten(cs.content, cs.type ?: existing.type)
+                                .filter { it.first.isNotEmpty() }
+                            val listItemDeletions = kvToDelete.filter { it.second.isNotEmpty() }
+                            val keyDeletions      = kvToDelete.filter { it.second.isEmpty() }.map { it.first }.toSet()
+
+                            // Step 1: remove specific values from lists
+                            var newContent: String = existing.content
+                            for ((key, value) in listItemDeletions) {
+                                newContent = ContentFlattener.removeListValue(newContent, existing.type, key, value).getOrThrow()
+                            }
+
+                            // Step 2: delete entire keys
+                            if (keyDeletions.isNotEmpty()) {
+                                val remaining = ContentFlattener.flatten(newContent, existing.type)
+                                    .filter { it.first !in keyDeletions }
+                                newContent = if (remaining.isEmpty()) "" else ContentFlattener.assemble(remaining, existing.type)
+                            }
+
+                            if (newContent.isEmpty()) {
                                 nacos.delete(cs.dataId, cs.group, namespaceId)
                             } else {
-                                nacos.publish(existing.copy(content = ContentFlattener.assemble(remaining, existing.type)))
+                                nacos.publish(existing.copy(content = newContent))
                             }
                         } else {
                             nacos.delete(cs.dataId, cs.group, namespaceId)

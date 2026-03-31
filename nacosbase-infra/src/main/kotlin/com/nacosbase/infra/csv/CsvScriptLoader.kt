@@ -57,6 +57,7 @@ class CsvScriptLoader : ScriptLoaderPort {
         data class Group(val meta: Meta, val kvEntries: MutableList<Pair<String, String>>)
 
         val grouped = LinkedHashMap<ConfigKey, Group>()
+        val appendChangeSets = mutableListOf<ChangeSet>()
 
         rows.forEachIndexed { index, row ->
             val rowNum = index + 2
@@ -74,10 +75,27 @@ class CsvScriptLoader : ScriptLoaderPort {
             val namespace = requireNotNull(row["namespace"]?.takeIf { it.isNotBlank() }) {
                 "$fileName row $rowNum: 'namespace' is required"
             }
-            val key = ConfigKey(action, dataId, group, namespace)
 
             val kvKey   = row["key"]   ?: ""
             val kvValue = row["value"] ?: ""
+
+            // APPEND rows are never merged; each row is an independent ChangeSet
+            if (action == Action.APPEND) {
+                appendChangeSets.add(ChangeSet(
+                    action      = action,
+                    dataId      = dataId,
+                    group       = group,
+                    namespace   = namespace,
+                    content     = kvValue.takeIf { it.isNotBlank() },
+                    type        = row["type"]?.takeIf { it.isNotBlank() }?.let { ConfigType.valueOf(it) },
+                    description = row["description"]?.takeIf { it.isNotBlank() },
+                    operator    = row["operator"]?.takeIf { it.isNotBlank() },
+                    targetKey   = kvKey.takeIf { it.isNotBlank() },
+                ))
+                return@forEachIndexed
+            }
+
+            val key = ConfigKey(action, dataId, group, namespace)
 
             grouped.getOrPut(key) {
                 Group(
@@ -94,11 +112,12 @@ class CsvScriptLoader : ScriptLoaderPort {
         return grouped.entries.map { (key, grp) ->
             val content = grp.meta.type?.let { t ->
                 when (key.action) {
-                    // For DELETE, assemble only the keys (values are irrelevant) so the engine
-                    // knows which keys to remove. Null content means "delete entire config".
+                    // For DELETE: preserve value so the engine can distinguish
+                    // "delete entire key" (empty value) from "delete a specific list item" (non-empty value).
+                    // Null content means "delete entire config".
                     Action.DELETE -> {
-                        val keys = grp.kvEntries.filter { it.first.isNotEmpty() }
-                        if (keys.isNotEmpty()) ContentFlattener.assemble(keys.map { it.first to "" }, t) else null
+                        val entries = grp.kvEntries.filter { it.first.isNotEmpty() }
+                        if (entries.isNotEmpty()) ContentFlattener.assemble(entries, t) else null
                     }
                     else -> ContentFlattener.assemble(grp.kvEntries, t)
                 }
@@ -113,7 +132,7 @@ class CsvScriptLoader : ScriptLoaderPort {
                 description = grp.meta.description,
                 operator    = grp.meta.operator,
             )
-        }
+        } + appendChangeSets
     }
 
     private fun sha256(input: String): String {
