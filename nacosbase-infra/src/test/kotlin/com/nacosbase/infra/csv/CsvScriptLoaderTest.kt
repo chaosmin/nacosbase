@@ -23,7 +23,7 @@ class CsvScriptLoaderTest {
     private fun write(name: String, content: String): File =
         tempDir.resolve(name).toFile().also { it.writeText(content) }
 
-    private val validHeader = "action,dataId,group,namespace,content,type,description"
+    private val validHeader = "action,dataId,group,namespace,key,value,type,description,operator"
 
     // ── 1. Loads a single valid CSV ──────────────────────────────────────────
 
@@ -33,7 +33,7 @@ class CsvScriptLoaderTest {
             "001-init-redis.csv",
             """
             $validHeader
-            ADD,redis.yml,DEFAULT_GROUP,dev,"server: redis",YAML,init redis
+            ADD,redis.yml,DEFAULT_GROUP,dev,server,redis,YAML,init redis,Hugo
             """.trimIndent(),
         )
 
@@ -53,13 +53,14 @@ class CsvScriptLoaderTest {
         assertEquals("server: redis", cs.content)
         assertEquals(ConfigType.YAML, cs.type)
         assertEquals("init redis", cs.description)
+        assertEquals("Hugo", cs.operator)
     }
 
     // ── 2. Checksum is SHA-256 of file content ───────────────────────────────
 
     @Test
     fun `checksum matches sha256 of raw file content`() {
-        val rawContent = "$validHeader\nADD,app.yml,G,ns,value,YAML,desc"
+        val rawContent = "$validHeader\nADD,app.yml,G,ns,key,value,YAML,desc,op"
         write("1-app.csv", rawContent)
 
         val scripts = loader.loadOrdered(tempDir)
@@ -72,9 +73,9 @@ class CsvScriptLoaderTest {
 
     @Test
     fun `sorts scripts by numeric prefix ascending not lexicographically`() {
-        write("10-tenth.csv", "$validHeader\nADD,d10.yml,G,ns,,YAML,")
-        write("2-second.csv", "$validHeader\nADD,d2.yml,G,ns,,YAML,")
-        write("1-first.csv", "$validHeader\nADD,d1.yml,G,ns,,YAML,")
+        write("10-tenth.csv", "$validHeader\nADD,d10.yml,G,ns,,,YAML,,")
+        write("2-second.csv", "$validHeader\nADD,d2.yml,G,ns,,,YAML,,")
+        write("1-first.csv", "$validHeader\nADD,d1.yml,G,ns,,,YAML,,")
 
         val scripts = loader.loadOrdered(tempDir)
 
@@ -85,7 +86,7 @@ class CsvScriptLoaderTest {
 
     @Test
     fun `ignores non-csv files and subdirectories`() {
-        write("1-real.csv", "$validHeader\nADD,x.yml,G,ns,,YAML,")
+        write("1-real.csv", "$validHeader\nADD,x.yml,G,ns,,,YAML,,")
         write("README.md", "some docs")
         write("notes.txt", "notes")
         tempDir.resolve("subdir").toFile().mkdirs()
@@ -100,8 +101,8 @@ class CsvScriptLoaderTest {
 
     @Test
     fun `throws IllegalArgumentException on duplicate numeric prefix`() {
-        write("1-alpha.csv", "$validHeader\nADD,a.yml,G,ns,,YAML,")
-        write("1-beta.csv", "$validHeader\nADD,b.yml,G,ns,,YAML,")
+        write("1-alpha.csv", "$validHeader\nADD,a.yml,G,ns,,,YAML,,")
+        write("1-beta.csv", "$validHeader\nADD,b.yml,G,ns,,,YAML,,")
 
         assertFailsWith<IllegalArgumentException> {
             loader.loadOrdered(tempDir)
@@ -112,9 +113,9 @@ class CsvScriptLoaderTest {
 
     @Test
     fun `silently ignores csv files without numeric prefix`() {
-        write("readme.csv", "$validHeader\nADD,x.yml,G,ns,,YAML,")
-        write("config.csv", "$validHeader\nADD,y.yml,G,ns,,YAML,")
-        write("1-valid.csv", "$validHeader\nADD,z.yml,G,ns,,YAML,")
+        write("readme.csv", "$validHeader\nADD,x.yml,G,ns,,,YAML,,")
+        write("config.csv", "$validHeader\nADD,y.yml,G,ns,,,YAML,,")
+        write("1-valid.csv", "$validHeader\nADD,z.yml,G,ns,,,YAML,,")
 
         val scripts = loader.loadOrdered(tempDir)
 
@@ -130,7 +131,7 @@ class CsvScriptLoaderTest {
             "1-delete.csv",
             """
             $validHeader
-            DELETE,old.yml,DEFAULT_GROUP,dev,,YAML,clean up
+            DELETE,old.yml,DEFAULT_GROUP,dev,,,YAML,clean up,admin
             """.trimIndent(),
         )
 
@@ -141,18 +142,26 @@ class CsvScriptLoaderTest {
         assertNull(cs.content, "content should be null for DELETE")
     }
 
-    // ── 8. Multiline content in quoted CSV field ──────────────────────────────
+    // ── 8. Multiple rows for the same config are grouped into one ChangeSet ───
 
     @Test
-    fun `multiline content in quoted csv field is parsed correctly`() {
-        val csvContent = "$validHeader\n" +
-            "ADD,app.yml,DEFAULT_GROUP,dev,\"line1\nline2\nline3\",YAML,multiline test"
-        write("1-multiline.csv", csvContent)
+    fun `multiple rows with same dataId are grouped into one ChangeSet`() {
+        val csvContent = """
+            $validHeader
+            ADD,app.yml,DEFAULT_GROUP,dev,host,localhost,YAML,multi-key test,system
+            ADD,app.yml,DEFAULT_GROUP,dev,port,6379,YAML,multi-key test,system
+            ADD,app.yml,DEFAULT_GROUP,dev,timeout,3000,YAML,multi-key test,system
+        """.trimIndent()
+        write("1-multikey.csv", csvContent)
 
         val scripts = loader.loadOrdered(tempDir)
-        val cs = scripts[0].changeSets[0]
+        val changeSets = scripts[0].changeSets
 
-        assertEquals("line1\nline2\nline3", cs.content)
+        assertEquals(1, changeSets.size, "three rows for same config → one ChangeSet")
+        val cs = changeSets[0]
+        assertEquals("host: localhost\nport: 6379\ntimeout: 3000", cs.content)
+        assertEquals("multi-key test", cs.description)
+        assertEquals("system", cs.operator)
     }
 
     // ── 9. Empty directory returns empty list ────────────────────────────────
@@ -167,9 +176,9 @@ class CsvScriptLoaderTest {
 
     @Test
     fun `gaps in numeric prefixes are allowed`() {
-        write("1-first.csv", "$validHeader\nADD,a.yml,G,ns,,YAML,")
-        write("5-fifth.csv", "$validHeader\nADD,b.yml,G,ns,,YAML,")
-        write("100-hundredth.csv", "$validHeader\nADD,c.yml,G,ns,,YAML,")
+        write("1-first.csv", "$validHeader\nADD,a.yml,G,ns,,,YAML,,")
+        write("5-fifth.csv", "$validHeader\nADD,b.yml,G,ns,,,YAML,,")
+        write("100-hundredth.csv", "$validHeader\nADD,c.yml,G,ns,,,YAML,,")
 
         val scripts = loader.loadOrdered(tempDir)
 
@@ -184,7 +193,7 @@ class CsvScriptLoaderTest {
             "1-no-type.csv",
             """
             $validHeader
-            DELETE,old.yml,DEFAULT_GROUP,dev,,,no type
+            DELETE,old.yml,DEFAULT_GROUP,dev,,,,,
             """.trimIndent(),
         )
 
@@ -199,6 +208,18 @@ class CsvScriptLoaderTest {
         assertFailsWith<IllegalArgumentException> {
             loader.loadOrdered(tempDir.resolve("does-not-exist"))
         }
+    }
+
+    // ── 13. Date-prefixed filenames (YYYYMMDD) are sorted correctly ───────────
+
+    @Test
+    fun `date-prefixed csv files are loaded and sorted in date order`() {
+        write("20260331-first.csv", "$validHeader\nADD,a.yml,G,ns,k,v,YAML,desc,op")
+        write("20260401-second.csv", "$validHeader\nADD,b.yml,G,ns,k,v,YAML,desc,op")
+
+        val scripts = loader.loadOrdered(tempDir)
+
+        assertEquals(listOf("20260331-first.csv", "20260401-second.csv"), scripts.map { it.scriptName })
     }
 
     // ── utility ──────────────────────────────────────────────────────────────

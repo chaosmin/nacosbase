@@ -5,7 +5,8 @@ data class ChangeSet(
     val dataId: String,
     val group: String,
     val namespace: String,
-    val content: String?,     // null for DELETE
+    val content: String?,     // null for DELETE; assembled from key-value pairs by CsvScriptLoader
     val type: ConfigType?,
     val description: String?, // per-row description for audit trail
+    val operator: String? = null,
 )
