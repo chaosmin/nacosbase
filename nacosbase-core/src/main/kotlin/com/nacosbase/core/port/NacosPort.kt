@@ -7,4 +7,6 @@ interface NacosPort {
     fun publish(config: NacosConfig)
     fun delete(dataId: String, group: String, namespace: String)
     fun namespaceExists(namespace: String): Boolean
+    /** Resolves a namespace name (e.g. "dev") or ID to the actual Nacos namespace ID (UUID). Throws if not found. */
+    fun resolveNamespaceId(nameOrId: String): String
 }

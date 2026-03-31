@@ -23,4 +23,9 @@ class FakeNacosPort : NacosPort {
     }
 
     override fun namespaceExists(namespace: String) = namespace in namespaces
+
+    override fun resolveNamespaceId(nameOrId: String): String {
+        require(nameOrId in namespaces) { "namespace '$nameOrId' does not exist in Nacos. Please create it first." }
+        return nameOrId
+    }
 }
