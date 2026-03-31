@@ -8,13 +8,15 @@ import com.github.ajalt.clikt.parameters.options.required
 import com.nacosbase.cli.AppContext
 import com.nacosbase.core.engine.ChangeEngine
 import com.nacosbase.core.model.ChangeSet
+import com.nacosbase.core.model.ConfigType
+import com.nacosbase.core.util.ContentFlattener
 import java.nio.file.Path
 
 class BaselineCommand(
     internal val engineFactory: (Path) -> ChangeEngine = { AppContext.buildEngine(it) }
 ) : CliktCommand(name = "baseline", help = "Export current Nacos configs as baseline CSV") {
 
-    private val namespace by option("--namespace", help = "Nacos namespace ID").required()
+    private val namespace by option("--namespace", help = "Nacos namespace name or ID").required()
     private val output by option("--output", help = "Output CSV file path").required()
     private val config by option("--config", help = "Config file path").default("nacosbase.yml")
 
@@ -40,17 +42,27 @@ class BaselineCommand(
     private fun csvQuote(value: String): String = "\"${value.replace("\"", "\"\"")}\""
 
     private fun buildCsv(changeSets: List<ChangeSet>): String {
-        val sb = StringBuilder("action,dataId,group,namespace,content,type,description\n")
+        val sb = StringBuilder("action,dataId,group,namespace,key,value,type,description,operator\n")
         for (cs in changeSets) {
-            sb.append(listOf(
-                "ADD",
-                csvQuote(cs.dataId),
-                csvQuote(cs.group),
-                csvQuote(cs.namespace),
-                csvQuote(cs.content ?: ""),
-                cs.type?.name ?: "",
-                csvQuote(cs.description ?: ""),
-            ).joinToString(",") + "\n")
+            val type = cs.type ?: ConfigType.TEXT
+            val kvEntries = cs.content
+                ?.let { ContentFlattener.flatten(it, type) }
+                ?: listOf("" to "")
+            for ((key, value) in kvEntries) {
+                sb.append(
+                    listOf(
+                        "ADD",
+                        csvQuote(cs.dataId),
+                        csvQuote(cs.group),
+                        csvQuote(cs.namespace),
+                        csvQuote(key),
+                        csvQuote(value),
+                        type.name,
+                        csvQuote(cs.description ?: "baseline"),
+                        "system",
+                    ).joinToString(",") + "\n"
+                )
+            }
         }
         return sb.toString()
     }

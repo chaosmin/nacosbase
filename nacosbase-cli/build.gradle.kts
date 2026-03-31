@@ -7,12 +7,15 @@ plugins {
 
 application {
     mainClass.set("com.nacosbase.cli.MainKt")
+    applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
 }
 
 dependencies {
     implementation(project(":nacosbase-core"))
     implementation(project(":nacosbase-infra"))
     implementation("com.github.ajalt.clikt:clikt:4.4.0")
+
+    runtimeOnly("org.slf4j:slf4j-nop:2.0.16")
 
     testImplementation(kotlin("test"))
 }

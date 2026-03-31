@@ -4,6 +4,7 @@ import com.nacosbase.core.model.*
 import com.nacosbase.core.port.ChangeLogPort
 import com.nacosbase.core.port.NacosPort
 import com.nacosbase.core.port.ScriptLoaderPort
+import com.nacosbase.core.util.ContentFlattener
 import com.nacosbase.core.validation.ConfigValidator
 import kotlinx.serialization.json.*
 import java.nio.file.Path
@@ -27,11 +28,70 @@ class ChangeEngine(
                     existing?.status == ExecutionStatus.SUCCESS && existing.checksum != script.checksum ->
                         error("checksum mismatch for '${script.scriptName}'. " +
                               "Expected ${existing.checksum}, got ${script.checksum}. Script may have been tampered.")
-                    else -> applyScript(script)
+                    else -> {
+                        validateScript(script)
+                        applyScript(script)
+                    }
                 }
             }
         } finally {
             changelog.releaseLock()
+        }
+    }
+
+    /**
+     * Validates all changesets in [script] against the current Nacos state.
+     * Collects every failing condition and throws a single error listing all of them.
+     * Nothing is executed if any validation error is found.
+     */
+    private fun validateScript(script: ChangeScript) {
+        val errors = mutableListOf<String>()
+        var idx = 1
+
+        for (cs in script.changeSets) {
+            val namespaceId = runCatching { nacos.resolveNamespaceId(cs.namespace) }.getOrElse { ex ->
+                errors.add("[$idx] ${ex.message}")
+                idx++
+                null
+            } ?: continue
+            val existing = nacos.fetchAll(namespaceId).find { it.dataId == cs.dataId && it.group == cs.group }
+            val type = cs.type ?: ConfigType.TEXT
+
+            when (cs.action) {
+                Action.ADD -> if (existing != null && cs.content != null) {
+                    val existingKeys = ContentFlattener.flatten(existing.content, existing.type)
+                        .map { it.first }.toSet()
+                    ContentFlattener.flatten(cs.content, type)
+                        .filter { (k, _) -> k.isNotEmpty() && k in existingKeys }
+                        .forEach { (k, _) -> errors.add("[$idx] $k existed"); idx++ }
+                }
+                Action.MODIFY -> {
+                    if (existing == null) {
+                        errors.add("[$idx] '${cs.dataId}' not found"); idx++
+                    } else if (cs.content != null) {
+                        val existingKeys = ContentFlattener.flatten(existing.content, existing.type)
+                            .map { it.first }.toSet()
+                        ContentFlattener.flatten(cs.content, type)
+                            .filter { (k, _) -> k.isNotEmpty() && k !in existingKeys }
+                            .forEach { (k, _) -> errors.add("[$idx] $k not found"); idx++ }
+                    }
+                }
+                Action.DELETE -> {
+                    if (existing == null) {
+                        errors.add("[$idx] '${cs.dataId}' not found"); idx++
+                    } else if (cs.content != null) {
+                        val existingKeys = ContentFlattener.flatten(existing.content, existing.type)
+                            .map { it.first }.toSet()
+                        ContentFlattener.flatten(cs.content, type)
+                            .filter { (k, _) -> k.isNotEmpty() && k !in existingKeys }
+                            .forEach { (k, _) -> errors.add("[$idx] $k not found"); idx++ }
+                    }
+                }
+            }
+        }
+
+        require(errors.isEmpty()) {
+            "Validation failed for '${script.scriptName}':\n${errors.joinToString("\n")}"
         }
     }
 
@@ -40,37 +100,70 @@ class ChangeEngine(
         val rollbackSnapshots = mutableListOf<NacosConfig>()
         runCatching {
             for (cs in script.changeSets) {
-                validateNamespace(cs.namespace)
+                val namespaceId = nacos.resolveNamespaceId(cs.namespace)
                 cs.content?.let { ConfigValidator.validate(it, cs.type ?: ConfigType.TEXT).getOrThrow() }
                 when (cs.action) {
                     Action.ADD -> {
-                        val existing = nacos.fetchAll(cs.namespace)
-                            .find { it.dataId == cs.dataId && it.group == cs.group }
-                        require(existing == null) {
-                            "DataID '${cs.dataId}' already exists in Nacos. Use MODIFY to update it."
-                        }
                         val content = requireNotNull(cs.content) { "content required for ADD action on '${cs.dataId}'" }
                         val type = requireNotNull(cs.type) { "type required for ADD action on '${cs.dataId}'" }
-                        val added = NacosConfig(cs.dataId, cs.group, cs.namespace, content, type)
-                        nacos.publish(added)
-                        // Sentinel marks this ADD for deletion on rollback
-                        rollbackSnapshots.add(added.copy(content = "\u0000ADD_ROLLBACK"))
+                        val existing = nacos.fetchAll(namespaceId)
+                            .find { it.dataId == cs.dataId && it.group == cs.group }
+                        if (existing == null) {
+                            // Config does not exist — create it
+                            val added = NacosConfig(cs.dataId, cs.group, namespaceId, content, type)
+                            nacos.publish(added)
+                            rollbackSnapshots.add(added.copy(content = "\u0000ADD_ROLLBACK"))
+                        } else {
+                            // Config already exists — merge new keys in; fail on key conflicts
+                            val existingKv = ContentFlattener.flatten(existing.content, existing.type)
+                            val newKv = ContentFlattener.flatten(content, type)
+                            val existingKeys = existingKv.map { it.first }.toSet()
+                            val conflicts = newKv.filter { it.first.isNotEmpty() && it.first in existingKeys }
+                            require(conflicts.isEmpty()) {
+                                "Keys already exist in '${cs.dataId}': ${conflicts.map { it.first }}. Use MODIFY to update them."
+                            }
+                            val merged = ContentFlattener.assemble(existingKv + newKv, type)
+                            rollbackSnapshots.add(existing)
+                            nacos.publish(existing.copy(content = merged))
+                        }
                     }
                     Action.MODIFY -> {
-                        val existing = nacos.fetchAll(cs.namespace)
+                        val existing = nacos.fetchAll(namespaceId)
                             .find { it.dataId == cs.dataId && it.group == cs.group }
                             ?: error("DataID '${cs.dataId}' not found in Nacos. Cannot MODIFY.")
                         rollbackSnapshots.add(existing)
                         val content = requireNotNull(cs.content) { "content required for MODIFY action on '${cs.dataId}'" }
                         val type = requireNotNull(cs.type) { "type required for MODIFY action on '${cs.dataId}'" }
-                        nacos.publish(existing.copy(content = content, type = type))
+                        // Merge: update only the specified keys, preserve the rest
+                        val existingKv = ContentFlattener.flatten(existing.content, existing.type).toMutableList()
+                        val updates = ContentFlattener.flatten(content, type).toMap()
+                        val merged = existingKv
+                            .map { (k, v) -> k to (updates[k] ?: v) }
+                            .let { base ->
+                                val newKeys = updates.keys - base.map { it.first }.toSet()
+                                base + newKeys.map { k -> k to updates.getValue(k) }
+                            }
+                        nacos.publish(existing.copy(content = ContentFlattener.assemble(merged, type), type = type))
                     }
                     Action.DELETE -> {
-                        val existing = nacos.fetchAll(cs.namespace)
+                        val existing = nacos.fetchAll(namespaceId)
                             .find { it.dataId == cs.dataId && it.group == cs.group }
                             ?: error("DataID '${cs.dataId}' not found in Nacos. Cannot DELETE.")
                         rollbackSnapshots.add(existing)
-                        nacos.delete(cs.dataId, cs.group, cs.namespace)
+                        if (cs.content != null) {
+                            // Delete specific keys from the config
+                            val keysToDelete = ContentFlattener.flatten(cs.content, cs.type ?: existing.type)
+                                .map { it.first }.filter { it.isNotEmpty() }.toSet()
+                            val remaining = ContentFlattener.flatten(existing.content, existing.type)
+                                .filter { it.first !in keysToDelete }
+                            if (remaining.isEmpty()) {
+                                nacos.delete(cs.dataId, cs.group, namespaceId)
+                            } else {
+                                nacos.publish(existing.copy(content = ContentFlattener.assemble(remaining, existing.type)))
+                            }
+                        } else {
+                            nacos.delete(cs.dataId, cs.group, namespaceId)
+                        }
                     }
                 }
             }
@@ -142,8 +235,8 @@ class ChangeEngine(
     }
 
     fun baseline(namespace: String): Result<List<ChangeSet>> = runCatching {
-        validateNamespace(namespace)
-        nacos.fetchAll(namespace).map { config ->
+        val namespaceId = nacos.resolveNamespaceId(namespace)
+        nacos.fetchAll(namespaceId).map { config ->
             ChangeSet(
                 action = Action.ADD,
                 dataId = config.dataId,
@@ -153,12 +246,6 @@ class ChangeEngine(
                 type = config.type,
                 description = "baseline",
             )
-        }
-    }
-
-    private fun validateNamespace(namespace: String) {
-        require(nacos.namespaceExists(namespace)) {
-            "namespace '$namespace' does not exist in Nacos. Please create it first."
         }
     }
 
