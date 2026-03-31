@@ -24,12 +24,17 @@ object ContentFlattener {
         ConfigType.TEXT       -> listOf("" to content)
     }
 
-    /** Rebuild config content from an ordered list of (key, value) pairs based on [type]. */
-    fun assemble(entries: List<Pair<String, String>>, type: ConfigType): String = when (type) {
-        ConfigType.YAML       -> assembleYaml(entries)
-        ConfigType.PROPERTIES -> entries.joinToString("\n") { (k, v) -> if (k.isEmpty()) v else "$k=$v" }
-        ConfigType.JSON       -> assembleJson(entries)
-        ConfigType.TEXT       -> entries.firstOrNull()?.second ?: ""
+    /** Rebuild config content from an ordered list of (key, value) pairs based on [type].
+     *  Keys are sorted alphabetically before assembly so the written config is always in a
+     *  consistent, predictable order regardless of the order entries were added or modified. */
+    fun assemble(entries: List<Pair<String, String>>, type: ConfigType): String {
+        val sorted = entries.sortedBy { it.first }
+        return when (type) {
+            ConfigType.YAML       -> assembleYaml(sorted)
+            ConfigType.PROPERTIES -> sorted.joinToString("\n") { (k, v) -> if (k.isEmpty()) v else "$k=$v" }
+            ConfigType.JSON       -> assembleJson(sorted)
+            ConfigType.TEXT       -> sorted.firstOrNull()?.second ?: ""
+        }
     }
 
     private fun yamlDumperOptions() = DumperOptions().apply {
