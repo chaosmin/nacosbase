@@ -66,13 +66,28 @@ Create numbered CSV files inside `scriptsDir` (e.g. `changelogs/`). Files are ap
 **`changelogs/001-add-redis.csv`**
 
 ```csv
-action,dataId,group,namespace,content,type,description
-ADD,redis.yml,DEFAULT_GROUP,dev,"host: localhost
-port: 6379
-",YAML,Add Redis configuration
+action,dataId,group,namespace,key,value,type,description,operator
+ADD,redis.yml,DEFAULT_GROUP,dev,host,localhost,YAML,Add Redis config,hugo
+ADD,redis.yml,DEFAULT_GROUP,dev,port,6379,YAML,Add Redis config,hugo
 ```
 
-Supported actions: `ADD`, `MODIFY`, `DELETE`.
+Multiple rows with the same `(action, dataId, group, namespace)` are grouped into a single changeset. The example above adds two keys to `redis.yml` in one atomic operation.
+
+Supported actions and their key-level semantics:
+
+| Action | Behaviour |
+|--------|-----------|
+| `ADD` | If the config does **not** exist, create it with the given keys. If it already exists, **merge** the new keys in — fails if any key is already present. |
+| `MODIFY` | Update the specified keys in an existing config — fails if the config or any key does not exist. Unspecified keys are preserved unchanged. |
+| `DELETE` | Remove the specified keys from an existing config. If all keys are deleted the entire config is removed. Omit `key`/`value` to delete the whole config. Fails if the config or any key does not exist. |
+
+**Pre-execution validation:** before applying any changeset, nacosbase validates every operation in the CSV against the current Nacos state. If any condition cannot be satisfied, the entire script is aborted and all errors are reported at once:
+
+```
+Validation failed for '001-add-redis.csv':
+[1] host existed
+[2] port existed
+```
 
 ### 6. Preview changes (dry run)
 
@@ -145,12 +160,41 @@ Global options (per command):
 | `action` | Yes | `ADD`, `MODIFY`, or `DELETE` |
 | `dataId` | Yes | Nacos DataID |
 | `group` | Yes | Nacos group (e.g. `DEFAULT_GROUP`) |
-| `namespace` | Yes | Nacos namespace ID |
-| `content` | For ADD/MODIFY | Configuration content (quote multi-line values) |
-| `type` | For ADD/MODIFY | `YAML`, `PROPERTIES`, `JSON`, `TEXT`, `TOML` |
-| `description` | No | Human-readable description |
+| `namespace` | Yes | Nacos namespace name or ID |
+| `key` | For ADD/MODIFY/DELETE | Dot-notation key path (e.g. `server.port`). Leave blank to operate on the whole config (DELETE only). |
+| `value` | For ADD/MODIFY | The scalar value for this key |
+| `type` | For ADD/MODIFY | `YAML`, `PROPERTIES`, `JSON`, or `TEXT` |
+| `description` | No | Human-readable change description |
+| `operator` | No | Who is making this change |
 
 Script filenames must follow the pattern `{N}-{description}.csv` where `N` is a positive integer. Duplicate prefixes are rejected by `validate`.
+
+### Nested structure support
+
+nacosbase preserves the original nested format of YAML and JSON configs. Dot-notation keys are automatically expanded to nested structures:
+
+```csv
+ADD,app.yml,DEFAULT_GROUP,dev,server.host,localhost,YAML,init,hugo
+ADD,app.yml,DEFAULT_GROUP,dev,server.port,8080,YAML,init,hugo
+```
+
+Results in:
+
+```yaml
+server:
+  host: localhost
+  port: 8080
+```
+
+YAML lists (sequences of objects) are also preserved through the flatten/assemble round-trip:
+
+```yaml
+roles:
+  - roleName: PAYER
+    accountType: EPS
+  - roleName: LABEL_OWNER
+    accountType: EPS
+```
 
 ## Modules
 

@@ -66,13 +66,28 @@ java -jar nacosbase-0.1.0.jar baseline \
 **`changelogs/001-add-redis.csv`**
 
 ```csv
-action,dataId,group,namespace,content,type,description
-ADD,redis.yml,DEFAULT_GROUP,dev,"host: localhost
-port: 6379
-",YAML,添加 Redis 配置
+action,dataId,group,namespace,key,value,type,description,operator
+ADD,redis.yml,DEFAULT_GROUP,dev,host,localhost,YAML,添加 Redis 配置,hugo
+ADD,redis.yml,DEFAULT_GROUP,dev,port,6379,YAML,添加 Redis 配置,hugo
 ```
 
-支持的操作：`ADD`（新增）、`MODIFY`（修改）、`DELETE`（删除）。
+`(action, dataId, group, namespace)` 相同的多行会被合并为一个原子变更集。上例中两行 key 会在同一次操作中写入 `redis.yml`。
+
+各操作的键级语义如下：
+
+| 操作 | 行为 |
+|------|------|
+| `ADD` | 若配置文件**不存在**则创建并写入指定 key；若已存在则将新 key **合并**进去——若 key 已存在则报错。 |
+| `MODIFY` | 更新已有配置文件中的指定 key——若配置文件或 key 不存在则报错，未涉及的 key 保持不变。 |
+| `DELETE` | 从已有配置中删除指定 key；所有 key 删完后整个配置文件随之删除。不填 `key`/`value` 则删除整个配置文件。配置文件或 key 不存在均报错。 |
+
+**执行前校验：** 在应用任何变更之前，nacosbase 会将整个 CSV 中的每条操作与 Nacos 当前状态进行校验，只要有一条不满足执行条件，整个脚本就会中止，并一次性输出所有错误：
+
+```
+Validation failed for '001-add-redis.csv':
+[1] host existed
+[2] port existed
+```
 
 ### 6. 预览变更（Dry Run）
 
@@ -145,12 +160,41 @@ java -jar nacosbase-0.1.0.jar validate --scripts ./changelogs
 | `action` | 是 | `ADD`、`MODIFY` 或 `DELETE` |
 | `dataId` | 是 | Nacos DataID |
 | `group` | 是 | Nacos group（如 `DEFAULT_GROUP`） |
-| `namespace` | 是 | Nacos 命名空间 ID |
-| `content` | ADD/MODIFY 必填 | 配置内容（多行内容需用引号包裹） |
-| `type` | ADD/MODIFY 必填 | `YAML`、`PROPERTIES`、`JSON`、`TEXT`、`TOML` |
+| `namespace` | 是 | Nacos 命名空间名称或 ID |
+| `key` | ADD/MODIFY/DELETE 必填 | 点分隔的 key 路径（如 `server.port`）；DELETE 整个配置文件时可留空 |
+| `value` | ADD/MODIFY 必填 | 该 key 对应的标量值 |
+| `type` | ADD/MODIFY 必填 | `YAML`、`PROPERTIES`、`JSON` 或 `TEXT` |
 | `description` | 否 | 人类可读的变更描述 |
+| `operator` | 否 | 操作人 |
 
 脚本文件名须符合 `{N}-{描述}.csv` 格式，其中 `N` 为正整数。`validate` 命令会拒绝重复前缀。
+
+### 嵌套结构支持
+
+nacosbase 会自动将点分隔的 key 路径还原为 YAML/JSON 嵌套结构，保持配置文件原有格式：
+
+```csv
+ADD,app.yml,DEFAULT_GROUP,dev,server.host,localhost,YAML,初始化,hugo
+ADD,app.yml,DEFAULT_GROUP,dev,server.port,8080,YAML,初始化,hugo
+```
+
+写入 Nacos 后的效果：
+
+```yaml
+server:
+  host: localhost
+  port: 8080
+```
+
+YAML 列表（对象数组）在读取与写回过程中也会被完整保留：
+
+```yaml
+roles:
+  - roleName: PAYER
+    accountType: EPS
+  - roleName: LABEL_OWNER
+    accountType: EPS
+```
 
 ## 模块结构
 
