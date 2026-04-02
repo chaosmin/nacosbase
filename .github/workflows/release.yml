@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build-and-release:
@@ -76,3 +77,17 @@ jobs:
             release-assets/nacosbase.bat
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Publish to GitHub Packages
+        run: ./gradlew publishReleasePublicationToGitHubPackagesRepository -Pnacosbase.version=${{ steps.version.outputs.VERSION }} --no-daemon
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to Maven Central
+        run: ./gradlew publishAllPublicationsToMavenCentral -Pnacosbase.version=${{ steps.version.outputs.VERSION }} --no-daemon
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_SIGNING_PASSWORD: ${{ secrets.GPG_SIGNING_PASSWORD }}
