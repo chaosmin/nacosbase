@@ -8,6 +8,7 @@ import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -220,6 +221,127 @@ class CsvScriptLoaderTest {
         val scripts = loader.loadOrdered(tempDir)
 
         assertEquals(listOf("20260331-first.csv", "20260401-second.csv"), scripts.map { it.scriptName })
+    }
+
+    // ── 14. APPEND rows are not merged, each becomes its own ChangeSet ────────
+
+    @Test
+    fun `APPEND rows with same dataId are NOT merged - each becomes its own ChangeSet`() {
+        write(
+            "1-append.csv",
+            """
+            $validHeader
+            APPEND,app.yml,DEFAULT_GROUP,dev,servers,192.168.1.1,YAML,add server,hugo
+            APPEND,app.yml,DEFAULT_GROUP,dev,servers,192.168.1.2,YAML,add server,hugo
+            """.trimIndent(),
+        )
+
+        val scripts = loader.loadOrdered(tempDir)
+        val changeSets = scripts[0].changeSets
+
+        assertEquals(2, changeSets.size, "APPEND rows must NOT be merged")
+        assertEquals(Action.APPEND, changeSets[0].action)
+        assertEquals(Action.APPEND, changeSets[1].action)
+        assertEquals("192.168.1.1", changeSets[0].content)
+        assertEquals("192.168.1.2", changeSets[1].content)
+    }
+
+    // ── 15. APPEND rows carry targetKey ──────────────────────────────────────
+
+    @Test
+    fun `APPEND changeset carries key as targetKey`() {
+        write(
+            "1-append-key.csv",
+            """
+            $validHeader
+            APPEND,app.yml,DEFAULT_GROUP,dev,servers,192.168.1.1,YAML,add,hugo
+            """.trimIndent(),
+        )
+
+        val cs = loader.loadOrdered(tempDir)[0].changeSets[0]
+
+        assertEquals("servers", cs.targetKey)
+        assertEquals("192.168.1.1", cs.content)
+    }
+
+    // ── 16. DELETE key-only (no value) has assembled content with empty value ──
+
+    @Test
+    fun `DELETE with key but no value has non-null content containing the key`() {
+        write(
+            "1-delete-key.csv",
+            """
+            $validHeader
+            DELETE,app.yml,DEFAULT_GROUP,dev,timeout,,YAML,remove key,hugo
+            """.trimIndent(),
+        )
+
+        val cs = loader.loadOrdered(tempDir)[0].changeSets[0]
+
+        assertEquals(Action.DELETE, cs.action)
+        // key-only DELETE: content is assembled with empty value so the engine can
+        // distinguish "delete specific key" from "delete entire config" (null content)
+        assertTrue(cs.content != null, "DELETE with a key should have non-null content")
+        assertTrue(cs.content!!.contains("timeout"), "content should reference the key name")
+    }
+
+    // ── 17. Multiple scripts produce independent ChangeScripts ────────────────
+
+    @Test
+    fun `two csv files produce two independent ChangeScripts`() {
+        write("1-first.csv", "$validHeader\nADD,a.yml,G,ns,k,v,YAML,d,op")
+        write("2-second.csv", "$validHeader\nADD,b.yml,G,ns,k,v,YAML,d,op")
+
+        val scripts = loader.loadOrdered(tempDir)
+
+        assertEquals(2, scripts.size)
+        assertNotEquals(scripts[0].checksum, scripts[1].checksum, "different files should have different checksums")
+        assertEquals("a.yml", scripts[0].changeSets[0].dataId)
+        assertEquals("b.yml", scripts[1].changeSets[0].dataId)
+    }
+
+    // ── 18. Different action types in same file ───────────────────────────────
+
+    @Test
+    fun `csv with mixed actions produces separate ChangeSets per config`() {
+        write(
+            "1-mixed.csv",
+            """
+            $validHeader
+            ADD,new.yml,DEFAULT_GROUP,dev,host,localhost,YAML,add,hugo
+            MODIFY,existing.yml,DEFAULT_GROUP,dev,port,9090,YAML,modify,hugo
+            DELETE,old.yml,DEFAULT_GROUP,dev,,,YAML,delete,hugo
+            """.trimIndent(),
+        )
+
+        val changeSets = loader.loadOrdered(tempDir)[0].changeSets
+
+        assertEquals(3, changeSets.size)
+        assertEquals(Action.ADD, changeSets[0].action)
+        assertEquals(Action.MODIFY, changeSets[1].action)
+        assertEquals(Action.DELETE, changeSets[2].action)
+    }
+
+    // ── 19. MODIFY rows with same dataId are grouped ──────────────────────────
+
+    @Test
+    fun `MODIFY rows with same dataId are grouped into one ChangeSet`() {
+        write(
+            "1-modify-multi.csv",
+            """
+            $validHeader
+            MODIFY,app.yml,DEFAULT_GROUP,dev,host,newhost,YAML,update,hugo
+            MODIFY,app.yml,DEFAULT_GROUP,dev,port,9090,YAML,update,hugo
+            """.trimIndent(),
+        )
+
+        val changeSets = loader.loadOrdered(tempDir)[0].changeSets
+
+        assertEquals(1, changeSets.size, "MODIFY rows for same config must be grouped")
+        assertEquals(Action.MODIFY, changeSets[0].action)
+        val content = changeSets[0].content!!
+        assertTrue(content.contains("host"))
+        assertTrue(content.contains("port"))
     }
 
     // ── utility ──────────────────────────────────────────────────────────────

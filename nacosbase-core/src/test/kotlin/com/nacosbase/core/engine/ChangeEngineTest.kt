@@ -197,4 +197,303 @@ class ChangeEngineTest {
         assertEquals(ExecutionStatus.SUCCESS, statuses["001.csv"])
         assertNull(statuses["002.csv"])
     }
+
+    // --- update: lock ---
+
+    @Test fun `update fails immediately when lock cannot be acquired`() {
+        changelog.acquireLock() // pre-lock
+        nacos.namespaces.add("dev")
+        val scripts = listOf(script("001.csv", changeSets = listOf(addSet("redis.yml"))))
+
+        val result = engine(scripts).update(Path.of("."))
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()!!.message!!.contains("lock"))
+        assertTrue(nacos.configs.isEmpty())
+    }
+
+    // --- applyScript: ADD merge into existing ---
+
+    @Test fun `update ADD merges new keys into existing config`() {
+        nacos.namespaces.add("dev")
+        nacos.configs["dev/DEFAULT_GROUP/app.yml"] =
+            NacosConfig("app.yml", "DEFAULT_GROUP", "dev", "host: localhost", ConfigType.YAML)
+
+        val addSet = ChangeSet(
+            action = Action.ADD, dataId = "app.yml", group = "DEFAULT_GROUP",
+            namespace = "dev", content = "port: 8080", type = ConfigType.YAML, description = null
+        )
+        engine(listOf(script("001.csv", changeSets = listOf(addSet)))).update(Path.of(".")).getOrThrow()
+
+        val content = nacos.configs["dev/DEFAULT_GROUP/app.yml"]!!.content
+        assertTrue(content.contains("host"))
+        assertTrue(content.contains("port"))
+    }
+
+    @Test fun `update ADD fails on key conflict with existing config`() {
+        nacos.namespaces.add("dev")
+        nacos.configs["dev/DEFAULT_GROUP/app.yml"] =
+            NacosConfig("app.yml", "DEFAULT_GROUP", "dev", "host: localhost", ConfigType.YAML)
+
+        val addSet = ChangeSet(
+            action = Action.ADD, dataId = "app.yml", group = "DEFAULT_GROUP",
+            namespace = "dev", content = "host: conflict", type = ConfigType.YAML, description = null
+        )
+        val result = engine(listOf(script("001.csv", changeSets = listOf(addSet)))).update(Path.of("."))
+
+        assertTrue(result.isFailure)
+        // validation error — no record saved, original config untouched
+        assertTrue(changelog.findAll().isEmpty())
+        assertEquals("host: localhost", nacos.configs["dev/DEFAULT_GROUP/app.yml"]!!.content)
+    }
+
+    // --- applyScript: MODIFY ---
+
+    @Test fun `update MODIFY updates specified key preserving others`() {
+        nacos.namespaces.add("dev")
+        nacos.configs["dev/DEFAULT_GROUP/app.yml"] =
+            NacosConfig("app.yml", "DEFAULT_GROUP", "dev", "host: localhost\nport: 8080", ConfigType.YAML)
+
+        engine(listOf(script("001.csv", changeSets = listOf(modifySet("app.yml", "host: redis"))))).update(Path.of(".")).getOrThrow()
+
+        val content = nacos.configs["dev/DEFAULT_GROUP/app.yml"]!!.content
+        assertTrue(content.contains("redis"))
+        assertTrue(content.contains("port"))
+    }
+
+    // --- applyScript: APPEND ---
+
+    @Test fun `update APPEND promotes scalar to list`() {
+        nacos.namespaces.add("dev")
+        nacos.configs["dev/DEFAULT_GROUP/app.yml"] =
+            NacosConfig("app.yml", "DEFAULT_GROUP", "dev", "server: localhost", ConfigType.YAML)
+
+        val appendSet = ChangeSet(
+            action = Action.APPEND, dataId = "app.yml", group = "DEFAULT_GROUP",
+            namespace = "dev", content = "redis", type = ConfigType.YAML,
+            description = null, targetKey = "server"
+        )
+        engine(listOf(script("001.csv", changeSets = listOf(appendSet)))).update(Path.of(".")).getOrThrow()
+
+        val content = nacos.configs["dev/DEFAULT_GROUP/app.yml"]!!.content
+        assertTrue(content.contains("localhost"))
+        assertTrue(content.contains("redis"))
+    }
+
+    @Test fun `update APPEND adds item to existing list`() {
+        nacos.namespaces.add("dev")
+        nacos.configs["dev/DEFAULT_GROUP/app.yml"] =
+            NacosConfig("app.yml", "DEFAULT_GROUP", "dev", "servers:\n  - 192.168.1.1", ConfigType.YAML)
+
+        val appendSet = ChangeSet(
+            action = Action.APPEND, dataId = "app.yml", group = "DEFAULT_GROUP",
+            namespace = "dev", content = "192.168.1.2", type = ConfigType.YAML,
+            description = null, targetKey = "servers"
+        )
+        engine(listOf(script("001.csv", changeSets = listOf(appendSet)))).update(Path.of(".")).getOrThrow()
+
+        val content = nacos.configs["dev/DEFAULT_GROUP/app.yml"]!!.content
+        assertTrue(content.contains("192.168.1.1"))
+        assertTrue(content.contains("192.168.1.2"))
+    }
+
+    @Test fun `update APPEND fails when config not found`() {
+        nacos.namespaces.add("dev")
+        val appendSet = ChangeSet(
+            action = Action.APPEND, dataId = "missing.yml", group = "DEFAULT_GROUP",
+            namespace = "dev", content = "value", type = ConfigType.YAML,
+            description = null, targetKey = "key"
+        )
+        val result = engine(listOf(script("001.csv", changeSets = listOf(appendSet)))).update(Path.of("."))
+        assertTrue(result.isFailure)
+        assertTrue(changelog.findAll().isEmpty(), "validation error — no record saved")
+    }
+
+    // --- applyScript: DELETE with content ---
+
+    @Test fun `update DELETE removes specific key from config`() {
+        nacos.namespaces.add("dev")
+        nacos.configs["dev/DEFAULT_GROUP/app.yml"] =
+            NacosConfig("app.yml", "DEFAULT_GROUP", "dev", "host: localhost\nport: 8080", ConfigType.YAML)
+
+        val deleteSet = ChangeSet(
+            action = Action.DELETE, dataId = "app.yml", group = "DEFAULT_GROUP",
+            namespace = "dev", content = "port:", type = ConfigType.YAML, description = null
+        )
+        engine(listOf(script("001.csv", changeSets = listOf(deleteSet)))).update(Path.of(".")).getOrThrow()
+
+        val content = nacos.configs["dev/DEFAULT_GROUP/app.yml"]!!.content
+        assertTrue(!content.contains("port"))
+        assertTrue(content.contains("host"))
+    }
+
+    @Test fun `update DELETE removes specific list item`() {
+        nacos.namespaces.add("dev")
+        nacos.configs["dev/DEFAULT_GROUP/app.yml"] =
+            NacosConfig("app.yml", "DEFAULT_GROUP", "dev", "servers:\n  - 192.168.1.1\n  - 192.168.1.2", ConfigType.YAML)
+
+        val deleteSet = ChangeSet(
+            action = Action.DELETE, dataId = "app.yml", group = "DEFAULT_GROUP",
+            namespace = "dev", content = "servers: 192.168.1.1", type = ConfigType.YAML, description = null
+        )
+        engine(listOf(script("001.csv", changeSets = listOf(deleteSet)))).update(Path.of(".")).getOrThrow()
+
+        val content = nacos.configs["dev/DEFAULT_GROUP/app.yml"]!!.content
+        assertTrue(!content.contains("192.168.1.1"))
+        assertTrue(content.contains("192.168.1.2"))
+    }
+
+    @Test fun `update DELETE deletes entire config when no content`() {
+        nacos.namespaces.add("dev")
+        nacos.configs["dev/DEFAULT_GROUP/app.yml"] =
+            NacosConfig("app.yml", "DEFAULT_GROUP", "dev", "host: localhost", ConfigType.YAML)
+
+        engine(listOf(script("001.csv", changeSets = listOf(deleteSet("app.yml"))))).update(Path.of(".")).getOrThrow()
+
+        assertNull(nacos.configs["dev/DEFAULT_GROUP/app.yml"])
+    }
+
+    @Test fun `update DELETE deletes config when last key is removed`() {
+        nacos.namespaces.add("dev")
+        nacos.configs["dev/DEFAULT_GROUP/app.yml"] =
+            NacosConfig("app.yml", "DEFAULT_GROUP", "dev", "port: 8080", ConfigType.YAML)
+
+        val deleteSet = ChangeSet(
+            action = Action.DELETE, dataId = "app.yml", group = "DEFAULT_GROUP",
+            namespace = "dev", content = "port:", type = ConfigType.YAML, description = null
+        )
+        engine(listOf(script("001.csv", changeSets = listOf(deleteSet)))).update(Path.of(".")).getOrThrow()
+
+        assertNull(nacos.configs["dev/DEFAULT_GROUP/app.yml"], "config should be deleted when last key is removed")
+    }
+
+    // --- validateScript: error accumulation ---
+
+    @Test fun `update validation fails with all errors reported at once`() {
+        nacos.namespaces.add("dev")
+        // MODIFY a config that doesn't exist + APPEND a config that doesn't exist
+        val scripts = listOf(script("001.csv", changeSets = listOf(
+            modifySet("missing1.yml", "key: val"),
+            modifySet("missing2.yml", "key: val"),
+        )))
+
+        val result = engine(scripts).update(Path.of("."))
+
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()!!.message!!
+        assertTrue(msg.contains("missing1.yml"))
+        assertTrue(msg.contains("missing2.yml"))
+        assertTrue(changelog.findAll().isEmpty(), "no record saved when validation fails before apply")
+    }
+
+    @Test fun `update validation fails for MODIFY when key not found in config`() {
+        nacos.namespaces.add("dev")
+        nacos.configs["dev/DEFAULT_GROUP/app.yml"] =
+            NacosConfig("app.yml", "DEFAULT_GROUP", "dev", "host: localhost", ConfigType.YAML)
+
+        val result = engine(listOf(script("001.csv", changeSets = listOf(
+            modifySet("app.yml", "nonexistent: value")
+        )))).update(Path.of("."))
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()!!.message!!.contains("nonexistent"))
+    }
+
+    @Test fun `update validation fails for DELETE when config not found`() {
+        nacos.namespaces.add("dev")
+
+        val result = engine(listOf(script("001.csv", changeSets = listOf(
+            deleteSet("nonexistent.yml")
+        )))).update(Path.of("."))
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()!!.message!!.contains("nonexistent.yml"))
+    }
+
+    @Test fun `update validation fails for APPEND when config not found`() {
+        nacos.namespaces.add("dev")
+        val appendSet = ChangeSet(
+            action = Action.APPEND, dataId = "missing.yml", group = "DEFAULT_GROUP",
+            namespace = "dev", content = "val", type = ConfigType.YAML,
+            description = null, targetKey = "key"
+        )
+
+        val result = engine(listOf(script("001.csv", changeSets = listOf(appendSet)))).update(Path.of("."))
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()!!.message!!.contains("missing.yml"))
+    }
+
+    @Test fun `update validation fails for APPEND when key is missing`() {
+        nacos.namespaces.add("dev")
+        nacos.configs["dev/DEFAULT_GROUP/app.yml"] =
+            NacosConfig("app.yml", "DEFAULT_GROUP", "dev", "host: localhost", ConfigType.YAML)
+
+        val appendSet = ChangeSet(
+            action = Action.APPEND, dataId = "app.yml", group = "DEFAULT_GROUP",
+            namespace = "dev", content = "val", type = ConfigType.YAML,
+            description = null, targetKey = null
+        )
+
+        val result = engine(listOf(script("001.csv", changeSets = listOf(appendSet)))).update(Path.of("."))
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()!!.message!!.contains("key"))
+    }
+
+    @Test fun `update validation fails for ADD when key conflicts with existing config`() {
+        nacos.namespaces.add("dev")
+        nacos.configs["dev/DEFAULT_GROUP/app.yml"] =
+            NacosConfig("app.yml", "DEFAULT_GROUP", "dev", "host: localhost", ConfigType.YAML)
+
+        val addSet = ChangeSet(
+            action = Action.ADD, dataId = "app.yml", group = "DEFAULT_GROUP",
+            namespace = "dev", content = "host: conflict", type = ConfigType.YAML, description = null
+        )
+
+        val result = engine(listOf(script("001.csv", changeSets = listOf(addSet)))).update(Path.of("."))
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()!!.message!!.contains("host"))
+    }
+
+    // --- rollback: multiple scripts ---
+
+    @Test fun `rollback reverts N last SUCCESS records in reverse order`() {
+        nacos.namespaces.add("dev")
+        nacos.configs["dev/DEFAULT_GROUP/a.yml"] = NacosConfig("a.yml", "DEFAULT_GROUP", "dev", "new: a", ConfigType.YAML)
+        nacos.configs["dev/DEFAULT_GROUP/b.yml"] = NacosConfig("b.yml", "DEFAULT_GROUP", "dev", "new: b", ConfigType.YAML)
+
+        val snapA = """[{"dataId":"a.yml","group":"DEFAULT_GROUP","namespace":"dev","content":"old: a","type":"YAML"}]"""
+        val snapB = """[{"dataId":"b.yml","group":"DEFAULT_GROUP","namespace":"dev","content":"old: b","type":"YAML"}]"""
+        changelog.saveRecord(ChangeRecord(1L, "001.csv", "aaa", Instant.now(), appliedBy, 0, ExecutionStatus.SUCCESS, snapA))
+        changelog.saveRecord(ChangeRecord(2L, "002.csv", "bbb", Instant.now(), appliedBy, 0, ExecutionStatus.SUCCESS, snapB))
+
+        engine().rollback(Path.of("."), count = 2).getOrThrow()
+
+        assertEquals("old: a", nacos.configs["dev/DEFAULT_GROUP/a.yml"]!!.content)
+        assertEquals("old: b", nacos.configs["dev/DEFAULT_GROUP/b.yml"]!!.content)
+        assertTrue(changelog.findAll().all { it.status == ExecutionStatus.ROLLED_BACK })
+    }
+
+    // --- diff ---
+
+    @Test fun `diff includes FAILED and ROLLED_BACK scripts`() {
+        nacos.namespaces.add("dev")
+        changelog.saveRecord(ChangeRecord(1L, "001.csv", "aaa", Instant.now(), appliedBy, 0, ExecutionStatus.FAILED, null))
+        changelog.saveRecord(ChangeRecord(2L, "002.csv", "bbb", Instant.now(), appliedBy, 0, ExecutionStatus.ROLLED_BACK, null))
+        changelog.saveRecord(ChangeRecord(3L, "003.csv", "ccc", Instant.now(), appliedBy, 0, ExecutionStatus.SUCCESS, null))
+
+        val scripts = listOf(
+            script("001.csv", "aaa", listOf(addSet("a.yml"))),
+            script("002.csv", "bbb", listOf(addSet("b.yml"))),
+            script("003.csv", "ccc", listOf(addSet("c.yml"))),
+        )
+        val pending = engine(scripts).diff(Path.of(".")).getOrThrow()
+
+        assertEquals(2, pending.size)
+        assertTrue(pending.any { it.dataId == "a.yml" })
+        assertTrue(pending.any { it.dataId == "b.yml" })
+        assertTrue(pending.none { it.dataId == "c.yml" })
+    }
 }
