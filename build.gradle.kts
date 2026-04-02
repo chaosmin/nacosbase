@@ -13,11 +13,20 @@ allprojects {
 }
 
 subprojects {
+    apply(plugin = "jacoco")
+
     afterEvaluate {
         extensions.findByType<org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension>()
             ?.jvmToolchain(21)
         tasks.withType<Test> {
             useJUnitPlatform()
+            finalizedBy(tasks.named("jacocoTestReport"))
+        }
+        tasks.named<JacocoReport>("jacocoTestReport") {
+            reports {
+                xml.required.set(true)
+                html.required.set(false)
+            }
         }
     }
 }
