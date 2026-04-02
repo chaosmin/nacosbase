@@ -78,14 +78,14 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 
-      - name: Publish to GitHub Packages
-        run: ./gradlew publishReleasePublicationToGitHubPackagesRepository -Pnacosbase.version=${{ steps.version.outputs.VERSION }} --no-daemon
+      - name: Publish CLI to GitHub Packages
+        run: ./gradlew :nacosbase-cli:publishReleasePublicationToGitHubPackagesRepository -Pnacosbase.version=${{ steps.version.outputs.VERSION }} --no-daemon
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish to Maven Central
-        run: ./gradlew publishAllPublicationsToMavenCentral -Pnacosbase.version=${{ steps.version.outputs.VERSION }} --no-daemon
+      - name: Publish core/infra to Maven Central
+        run: ./gradlew :nacosbase-core:publishAllPublicationsToMavenCentral :nacosbase-infra:publishAllPublicationsToMavenCentral -Pnacosbase.version=${{ steps.version.outputs.VERSION }} --no-daemon
         env:
           MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}

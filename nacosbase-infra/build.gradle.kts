@@ -61,16 +61,6 @@ publishing {
             }
         }
     }
-    repositories {
-        maven {
-            name = "GitHubPackages"
-            url = uri("https://maven.pkg.github.com/chaosmin/nacosbase")
-            credentials {
-                username = System.getenv("GITHUB_ACTOR")
-                password = System.getenv("GITHUB_TOKEN")
-            }
-        }
-    }
 }
 
 signing {
@@ -83,7 +73,7 @@ signing {
 }
 
 nmcp {
-    publishAllPublications {
+    publish("release") {
         username = System.getenv("MAVEN_CENTRAL_USERNAME") ?: ""
         password = System.getenv("MAVEN_CENTRAL_PASSWORD") ?: ""
         publicationType = "AUTOMATIC"
