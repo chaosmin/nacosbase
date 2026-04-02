@@ -4,7 +4,6 @@ plugins {
     kotlin("plugin.serialization")
     `maven-publish`
     signing
-    id("com.gradleup.nmcp")
 }
 
 java {
@@ -61,6 +60,12 @@ publishing {
             }
         }
     }
+    repositories {
+        maven {
+            name = "staging"
+            url = uri(rootProject.layout.buildDirectory.dir("staging-repo"))
+        }
+    }
 }
 
 signing {
@@ -69,13 +74,5 @@ signing {
     if (!signingKey.isNullOrBlank()) {
         useInMemoryPgpKeys(signingKey, signingPassword)
         sign(publishing.publications["release"])
-    }
-}
-
-nmcp {
-    publish("release") {
-        username = System.getenv("MAVEN_CENTRAL_USERNAME") ?: ""
-        password = System.getenv("MAVEN_CENTRAL_PASSWORD") ?: ""
-        publicationType = "AUTOMATIC"
     }
 }

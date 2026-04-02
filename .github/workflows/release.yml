@@ -85,7 +85,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish core/infra to Maven Central
-        run: ./gradlew :nacosbase-core:publishAllPublicationsToMavenCentral :nacosbase-infra:publishAllPublicationsToMavenCentral -Pnacosbase.version=${{ steps.version.outputs.VERSION }} --no-daemon
+        run: |
+          ./gradlew :nacosbase-core:publishReleasePublicationToStagingRepository \
+                    :nacosbase-infra:publishReleasePublicationToStagingRepository \
+                    -Pnacosbase.version=${{ steps.version.outputs.VERSION }} --no-daemon
+          cd build/staging-repo
+          zip -r ../../maven-bundle.zip .
+          cd ../..
+          TOKEN=$(printf '%s' "$MAVEN_CENTRAL_USERNAME:$MAVEN_CENTRAL_PASSWORD" | base64 -w 0)
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $TOKEN" \
+            -F "bundle=@maven-bundle.zip" \
+            "https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC"
         env:
           MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
