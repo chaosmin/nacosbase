@@ -6,14 +6,13 @@ import com.nacosbase.core.model.ChangeSet
 import com.nacosbase.core.model.ConfigType
 import com.nacosbase.core.model.ExecutionStatus
 import com.nacosbase.infra.config.DatasourceConfig
-import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.deleteAll
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.exposed.sql.update
-import org.junit.jupiter.api.Assumptions.assumeTrue
-import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.MySQLContainer
+import org.testcontainers.junit.jupiter.Container
+import org.testcontainers.junit.jupiter.Testcontainers
 import java.time.Instant
 import java.time.ZoneOffset
 import kotlin.test.BeforeTest
@@ -23,16 +22,23 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
+/**
+ * Integration tests for MysqlChangeLogAdapter.
+ *
+ * Requires Docker. Tests are automatically disabled when Docker is unavailable.
+ *
+ * Container reuse: to skip the ~30s MySQL startup on repeated runs, add
+ *   testcontainers.reuse.enable=true
+ * to ~/.testcontainers.properties and the container will be kept alive between runs.
+ */
+@Testcontainers(disabledWithoutDocker = true)
 class MysqlChangeLogAdapterTest {
 
     companion object {
-        private val dockerAvailable: Boolean by lazy {
-            runCatching { DockerClientFactory.instance().client() }.isSuccess
-        }
-
-        private val mysql: MySQLContainer<*> by lazy {
-            MySQLContainer("mysql:8.0").apply { start() }
-        }
+        @Container
+        @JvmStatic
+        private val mysql: MySQLContainer<*> = MySQLContainer("mysql:8.0")
+            .withReuse(true)
 
         private val db by lazy {
             DatabaseFactory.connect(
@@ -49,7 +55,6 @@ class MysqlChangeLogAdapterTest {
 
     @BeforeTest
     fun setUp() {
-        assumeTrue(dockerAvailable, "Docker not available — skipping Testcontainers integration tests")
         transaction(db) {
             ChangelogItemTable.deleteAll()
             ChangelogTable.deleteAll()
