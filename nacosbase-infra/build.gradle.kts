@@ -36,6 +36,11 @@ publishing {
     publications {
         create<MavenPublication>("release") {
             from(components["java"])
+            versionMapping {
+                allVariants {
+                    fromResolutionResult()
+                }
+            }
             pom {
                 name.set("nacosbase-infra")
                 description.set("Nacos configuration version management — infrastructure adapters (Nacos, MySQL, CSV)")

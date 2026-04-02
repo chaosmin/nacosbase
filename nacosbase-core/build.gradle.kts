@@ -21,6 +21,11 @@ publishing {
     publications {
         create<MavenPublication>("release") {
             from(components["java"])
+            versionMapping {
+                allVariants {
+                    fromResolutionResult()
+                }
+            }
             pom {
                 name.set("nacosbase-core")
                 description.set("Nacos configuration version management — core domain layer")
