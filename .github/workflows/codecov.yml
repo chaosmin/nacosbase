@@ -2,6 +2,8 @@ name: Upload coverage reports to Codecov
 
 on:
   push:
+    tags-ignore:
+      - 'v*.*.*'
     paths-ignore:
       - 'docs/**'
       - '**.md'
