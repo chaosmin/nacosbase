@@ -47,6 +47,7 @@ private fun makeEngine(changeSets: List<ChangeScript> = emptyList()): ChangeEngi
         override fun publish(config: NacosConfig) {}
         override fun delete(dataId: String, group: String, namespace: String) {}
         override fun namespaceExists(namespace: String) = true
+        override fun resolveNamespaceId(nameOrId: String) = nameOrId
     }
     val changelog = object : ChangeLogPort {
         override fun findAll() = emptyList<ChangeRecord>()
