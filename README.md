@@ -6,6 +6,7 @@ English | [简体中文](README-zh.md)
 [![CI](https://img.shields.io/github/actions/workflow/status/chaosmin/nacosbase/release.yml?style=flat-square&label=build)](https://github.com/chaosmin/nacosbase/actions)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.0.21-7f52ff?style=flat-square&logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![JDK](https://img.shields.io/badge/JDK-21+-f89820?style=flat-square&logo=openjdk&logoColor=white)](https://adoptium.net)
+[![codecov](https://codecov.io/gh/chaosmin/nacosbase/branch/master/graph/badge.svg?token=HmsHWVDgSa)](https://codecov.io/gh/chaosmin/nacosbase)
 [![License](https://img.shields.io/github/license/chaosmin/nacosbase?style=flat-square&color=22c55e)](LICENSE)
 
 **nacosbase** is a Nacos configuration version management tool inspired by [Liquibase](https://www.liquibase.org/). It brings database-migration-style discipline to Nacos config management — giving teams a reproducible, auditable, and scriptable workflow for managing configurations across environments.
