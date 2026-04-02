@@ -74,13 +74,18 @@ object ContentFlattener {
         setNestedValue(child as MutableMap<String, Any>, keys.drop(1), value)
     }
 
-    /** If [value] is a YAML-serialized list (starts with `- `), parse it back to a native List. */
+    /**
+     * Parse [value] as a YAML scalar so SnakeYAML can dump it without spurious quotes.
+     * - Numbers / booleans → native type (Int, Boolean, …) → dumps unquoted
+     * - Lists (starts with `- `) → native List → dumps as block sequence
+     * - Plain strings → String (unchanged)
+     * - Map-like strings (contain `: `) → kept as String to avoid structure corruption
+     */
     private fun tryParseYamlValue(value: String): Any {
-        val trimmed = value.trimStart()
-        if (!trimmed.startsWith("- ") && !trimmed.startsWith("-\n")) return value
         return try {
-            @Suppress("UNCHECKED_CAST")
-            Yaml().load<Any>(value) ?: value
+            val parsed = Yaml().load<Any>(value)
+            // Discard map results – they would corrupt the flat key-value structure
+            if (parsed != null && parsed !is Map<*, *>) parsed else value
         } catch (_: Exception) {
             value
         }
