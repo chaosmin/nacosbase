@@ -219,6 +219,7 @@ class ChangeEngine(
                 executionMs = System.currentTimeMillis() - startMs,
                 status = ExecutionStatus.SUCCESS,
                 rollbackData = serializeSnapshots(rollbackSnapshots),
+                items = script.changeSets,
             ))
         }.onFailure { ex ->
             changelog.saveRecord(ChangeRecord(
@@ -230,6 +231,7 @@ class ChangeEngine(
                 executionMs = System.currentTimeMillis() - startMs,
                 status = ExecutionStatus.FAILED,
                 rollbackData = null,
+                items = script.changeSets,
             ))
             throw ex
         }

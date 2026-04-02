@@ -1,6 +1,9 @@
 package com.nacosbase.infra.db
 
+import com.nacosbase.core.model.Action
 import com.nacosbase.core.model.ChangeRecord
+import com.nacosbase.core.model.ChangeSet
+import com.nacosbase.core.model.ConfigType
 import com.nacosbase.core.model.ExecutionStatus
 import com.nacosbase.infra.config.DatasourceConfig
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -48,6 +51,7 @@ class MysqlChangeLogAdapterTest {
     fun setUp() {
         assumeTrue(dockerAvailable, "Docker not available — skipping Testcontainers integration tests")
         transaction(db) {
+            ChangelogItemTable.deleteAll()
             ChangelogTable.deleteAll()
             LockTable.update({ LockTable.id eq 1 }) {
                 it[LockTable.locked]   = false
@@ -181,5 +185,85 @@ class MysqlChangeLogAdapterTest {
 
         val secondAcquire = adapter.acquireLock()
         assertTrue(secondAcquire, "acquireLock should succeed after releaseLock")
+    }
+
+    @Test
+    fun `saveRecord persists changelog items linked to the record`() {
+        val items = listOf(
+            ChangeSet(
+                action = Action.ADD,
+                dataId = "app.yml",
+                group = "DEFAULT_GROUP",
+                namespace = "dev",
+                content = "redis:\n  host: localhost",
+                type = ConfigType.YAML,
+                description = "add redis config",
+                operator = "Hugo",
+            ),
+            ChangeSet(
+                action = Action.MODIFY,
+                dataId = "db.yml",
+                group = "DEFAULT_GROUP",
+                namespace = "dev",
+                content = "url: jdbc:mysql://localhost/mydb",
+                type = ConfigType.YAML,
+                description = "update db url",
+                operator = "Hugo",
+            ),
+        )
+        val record = buildRecord(scriptName = "010-items.csv").copy(items = items)
+        adapter.saveRecord(record)
+
+        val savedItems = transaction(db) {
+            val changelogId = ChangelogTable
+                .selectAll()
+                .where { ChangelogTable.scriptName eq "010-items.csv" }
+                .single()[ChangelogTable.id]
+            ChangelogItemTable.selectAll()
+                .where { ChangelogItemTable.changelogId eq changelogId }
+                .toList()
+        }
+
+        assertEquals(2, savedItems.size, "Expected two items saved")
+        val first = savedItems[0]
+        assertEquals("ADD", first[ChangelogItemTable.action])
+        assertEquals("app.yml", first[ChangelogItemTable.dataId])
+        assertEquals("DEFAULT_GROUP", first[ChangelogItemTable.configGroup])
+        assertEquals("dev", first[ChangelogItemTable.namespace])
+        assertEquals("YAML", first[ChangelogItemTable.type])
+        assertEquals("add redis config", first[ChangelogItemTable.description])
+        assertEquals("Hugo", first[ChangelogItemTable.operator])
+    }
+
+    @Test
+    fun `saveRecord with same scriptName replaces old items`() {
+        val original = buildRecord(scriptName = "011-replace.csv").copy(
+            items = listOf(
+                ChangeSet(Action.ADD, "old.yml", "G", "dev", null, null, null),
+            )
+        )
+        adapter.saveRecord(original)
+
+        val updated = buildRecord(scriptName = "011-replace.csv", checksum = "new-cs").copy(
+            items = listOf(
+                ChangeSet(Action.MODIFY, "new.yml", "G", "dev", null, null, null),
+                ChangeSet(Action.DELETE, "another.yml", "G", "dev", null, null, null),
+            )
+        )
+        adapter.saveRecord(updated)
+
+        val savedItems = transaction(db) {
+            val changelogId = ChangelogTable
+                .selectAll()
+                .where { ChangelogTable.scriptName eq "011-replace.csv" }
+                .single()[ChangelogTable.id]
+            ChangelogItemTable.selectAll()
+                .where { ChangelogItemTable.changelogId eq changelogId }
+                .toList()
+        }
+
+        assertEquals(2, savedItems.size, "Old items should be replaced with new items")
+        assertEquals("MODIFY", savedItems[0][ChangelogItemTable.action])
+        assertEquals("DELETE", savedItems[1][ChangelogItemTable.action])
     }
 }

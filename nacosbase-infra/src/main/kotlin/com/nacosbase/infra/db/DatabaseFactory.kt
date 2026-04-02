@@ -16,7 +16,7 @@ object DatabaseFactory {
             password = config.password,
         )
         transaction(db) {
-            SchemaUtils.create(ChangelogTable, LockTable)
+            SchemaUtils.create(ChangelogTable, ChangelogItemTable, LockTable)
             val exists = LockTable.selectAll().where { LockTable.id eq 1 }.count() > 0
             if (!exists) {
                 LockTable.insert {

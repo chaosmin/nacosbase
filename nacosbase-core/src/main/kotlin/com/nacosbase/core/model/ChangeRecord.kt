@@ -11,4 +11,5 @@ data class ChangeRecord(
     val executionMs: Long,
     val status: ExecutionStatus,
     val rollbackData: String?,  // JSON array of pre-change NacosConfig snapshots
+    val items: List<ChangeSet> = emptyList(),
 )

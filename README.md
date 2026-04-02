@@ -9,9 +9,7 @@ English | [简体中文](README-zh.md)
 [![codecov](https://codecov.io/gh/chaosmin/nacosbase/branch/master/graph/badge.svg?token=HmsHWVDgSa)](https://codecov.io/gh/chaosmin/nacosbase)
 [![License](https://img.shields.io/github/license/chaosmin/nacosbase?style=flat-square&color=22c55e)](LICENSE)
 
-**nacosbase** is a Nacos configuration version management tool inspired by [Liquibase](https://www.liquibase.org/). It brings database-migration-style discipline to Nacos config management — giving teams a reproducible, auditable, and scriptable workflow for managing configurations across environments.
-
-## Core Concepts
+**nacosbase** is a Nacos configuration version management tool inspired by [Liquibase](https://www.liquibase.org/). Write numbered CSV change scripts, run `update` to apply them, use `rollback` to revert — the same mental model as database migrations, applied to Nacos configs.
 
 | Liquibase | nacosbase |
 |-----------|-----------|
@@ -20,206 +18,136 @@ English | [简体中文](README-zh.md)
 | DATABASECHANGELOG | `nacosbase_changelog` MySQL table |
 | Checksum validation | Tamper detection for applied scripts |
 
-## Quick Start
-
-### 1. Prerequisites
+## Prerequisites
 
 - JDK 21+
-- MySQL 8.x (tracks applied change scripts)
+- MySQL 8.x
 - Nacos Server 2.x
 
-### 2. Build the CLI fat-jar
+## Quick Start
+
+### 1. Build
 
 ```bash
-./gradlew :nacosbase-cli:shadowJar          # macOS/Linux
-gradlew.bat :nacosbase-cli:shadowJar        # Windows
+./gradlew :nacosbase-cli:shadowJar
 # Output: nacosbase-cli/build/libs/nacosbase-0.1.0.jar
 ```
 
-### 3. Create `nacosbase.yml`
+### 2. Configure
 
 ```yaml
+# nacosbase.yml
 nacos:
   serverAddr: 127.0.0.1:8848
   username: nacos
-  password: ${NACOS_PASSWORD}           # from env var
+  password: ${NACOS_PASSWORD}
 
 datasource:
   url: jdbc:mysql://localhost:3306/nacosbase
   username: root
-  password: ${DB_PASSWORD}              # from env var
+  password: ${DB_PASSWORD}
 
 changelog:
-  scriptsDir: ./changelogs              # directory containing CSV scripts
-  appliedBy: ${USER:-nacosbase}         # recorded in the execution log
+  scriptsDir: ./changelogs
+  appliedBy: ${USER:-nacosbase}
 ```
 
-Passwords **must** be provided via environment variables (`${VAR}` or `${VAR:-default}`). Never hardcode credentials.
+Passwords **must** use `${ENV_VAR}` syntax — never hardcode credentials.
 
-### 4. Export the current baseline
+### 3. Export baseline
 
 ```bash
-java -jar nacosbase-0.1.0.jar baseline \
-  --namespace dev \
-  --output changelogs/000-baseline.csv
+java -jar nacosbase-0.1.0.jar baseline --namespace dev --output changelogs/000-baseline.csv
 ```
 
-This connects to Nacos and generates a CSV snapshot of every config in `namespace=dev`.
+### 4. Write change scripts
 
-### 5. Write change scripts
-
-Create numbered CSV files inside `scriptsDir` (e.g. `changelogs/`). Files are applied in ascending numeric-prefix order.
-
-**`changelogs/001-add-redis.csv`**
+Create `changelogs/{N}-{description}.csv` files. Files execute in ascending numeric-prefix order.
 
 ```csv
 action,dataId,group,namespace,key,value,type,description,operator
-ADD,redis.yml,DEFAULT_GROUP,dev,host,localhost,YAML,Add Redis config,hugo
-ADD,redis.yml,DEFAULT_GROUP,dev,port,6379,YAML,Add Redis config,hugo
+ADD,redis.yml,DEFAULT_GROUP,dev,host,localhost,YAML,Add Redis,hugo
+ADD,redis.yml,DEFAULT_GROUP,dev,port,6379,YAML,Add Redis,hugo
 ```
 
-Multiple rows with the same `(action, dataId, group, namespace)` are grouped into a single changeset. The example above adds two keys to `redis.yml` in one atomic operation.
+Rows sharing the same `(action, dataId, group, namespace)` are merged into one atomic changeset.
 
-Supported actions and their key-level semantics:
-
-| Action | Behaviour |
-|--------|-----------|
-| `ADD` | If the config does **not** exist, create it with the given keys. If it already exists, **merge** the new keys in — fails if any key is already present. |
-| `MODIFY` | Update the specified keys in an existing config — fails if the config or any key does not exist. Unspecified keys are preserved unchanged. |
-| `DELETE` | If `value` is blank: remove the entire key. If `value` is set: remove that specific item from the key's list — fails if the key is not a list or the value is not present. Omit both `key` and `value` to delete the whole config. Fails if the config or key does not exist. |
-| `APPEND` | Append `value` to the list at `key`. If the current value is a scalar it is promoted to a list. Fails if the key holds a nested object. Each row is an independent operation (rows are **not** merged). |
-
-**Pre-execution validation:** before applying any changeset, nacosbase validates every operation in the CSV against the current Nacos state. If any condition cannot be satisfied, the entire script is aborted and all errors are reported at once:
-
-```
-Validation failed for '001-add-redis.csv':
-[1] host existed
-[2] port existed
-```
-
-### 6. Preview changes (dry run)
+### 5. Apply
 
 ```bash
-java -jar nacosbase-0.1.0.jar diff --config nacosbase.yml
+java -jar nacosbase-0.1.0.jar diff    --config nacosbase.yml   # preview
+java -jar nacosbase-0.1.0.jar update  --config nacosbase.yml   # apply
+java -jar nacosbase-0.1.0.jar status  --config nacosbase.yml   # inspect log
+java -jar nacosbase-0.1.0.jar rollback --count 1 --config nacosbase.yml  # revert
 ```
 
-Exits `0` if Nacos matches scripts exactly, `1` if changes would be applied. Example output:
-
-```
-[ADD]     redis.yml @ DEFAULT_GROUP/dev
-[MODIFY]  app.yml @ DEFAULT_GROUP/prod
-```
-
-### 7. Apply changes
-
-```bash
-java -jar nacosbase-0.1.0.jar update --config nacosbase.yml
-```
-
-Already-applied scripts are skipped. A checksum mismatch on an applied script halts execution immediately.
-
-### 8. Check status
-
-```bash
-java -jar nacosbase-0.1.0.jar status --config nacosbase.yml
-```
-
-Lists every script with its status (`SUCCESS`, `FAILED`, `ROLLED_BACK`) and when it was applied.
-
-### 9. Roll back
-
-```bash
-# Roll back the last applied script (default)
-java -jar nacosbase-0.1.0.jar rollback --config nacosbase.yml
-
-# Roll back the last N scripts
-java -jar nacosbase-0.1.0.jar rollback --count 3 --config nacosbase.yml
-```
-
-### 10. Validate scripts offline
-
-```bash
-java -jar nacosbase-0.1.0.jar validate --scripts ./changelogs
-```
-
-Checks CSV structure and duplicate numeric prefixes without connecting to Nacos or MySQL. Exits `0` on success.
-
-## CLI Reference
-
-```
-Usage: nacosbase [command] [options]
-
-Commands:
-  baseline   Export current Nacos configs as a baseline CSV
-  update     Apply pending change scripts to Nacos
-  status     Show execution log (applied scripts and their status)
-  diff       Preview changes that would be applied by update
-  validate   Validate CSV change scripts offline
-  rollback   Roll back one or more applied change scripts
-
-Global options (per command):
-  --config   Path to nacosbase.yml  (default: nacosbase.yml)
-```
-
-## CSV Script Format
+## CSV Format
 
 | Column | Required | Description |
 |--------|----------|-------------|
-| `action` | Yes | `ADD`, `MODIFY`, `DELETE`, or `APPEND` |
+| `action` | Yes | `ADD`, `MODIFY`, `DELETE`, `APPEND` |
 | `dataId` | Yes | Nacos DataID |
-| `group` | Yes | Nacos group (e.g. `DEFAULT_GROUP`) |
+| `group` | Yes | Nacos group |
 | `namespace` | Yes | Nacos namespace name or ID |
-| `key` | For ADD/MODIFY/DELETE/APPEND | Dot-notation key path (e.g. `server.port`). Leave blank to delete the whole config (DELETE only). |
-| `value` | For ADD/MODIFY/APPEND; optional for DELETE | Scalar value. For DELETE: if set, removes that specific item from the key's list instead of the whole key. |
-| `type` | For ADD/MODIFY/APPEND | `YAML`, `PROPERTIES`, `JSON`, or `TEXT` |
-| `description` | No | Human-readable change description |
-| `operator` | No | Who is making this change |
+| `key` | Varies | Dot-notation path (e.g. `server.port`). Omit to delete the whole config (`DELETE` only). |
+| `value` | Varies | Scalar value. For `DELETE`: removes a specific list item when set; removes the whole key when blank. |
+| `type` | ADD/MODIFY/APPEND | `YAML`, `PROPERTIES`, `JSON`, `TEXT` |
+| `description` | No | Audit note |
+| `operator` | No | Who made the change |
 
-Script filenames must follow the pattern `{N}-{description}.csv` where `N` is a positive integer. Duplicate prefixes are rejected by `validate`.
+### Action semantics
 
-### Nested structure support
+| Action | Behaviour |
+|--------|-----------|
+| `ADD` | Creates config if absent; merges new keys if config exists. Fails on key conflicts. |
+| `MODIFY` | Updates specified keys in an existing config. Unspecified keys are preserved. Fails if config or key is absent. |
+| `DELETE` | No key/value → delete whole config. Key only → delete that key. Key + value → remove list item. Fails if target not found. |
+| `APPEND` | Appends value to a list key; promotes scalar to list if needed. Each row is independent (never merged). |
 
-nacosbase preserves the original nested format of YAML and JSON configs. Dot-notation keys are automatically expanded to nested structures:
+**Pre-execution validation:** every changeset is validated against live Nacos state before anything is applied. All errors are collected and reported at once.
+
+### Examples
 
 ```csv
+# Nested keys expand to YAML structure
 ADD,app.yml,DEFAULT_GROUP,dev,server.host,localhost,YAML,init,hugo
 ADD,app.yml,DEFAULT_GROUP,dev,server.port,8080,YAML,init,hugo
+
+# Append to / remove from a list
+APPEND,app.yml,DEFAULT_GROUP,dev,servers,192.168.1.1,YAML,add,hugo
+DELETE,app.yml,DEFAULT_GROUP,dev,servers,192.168.1.1,YAML,remove,hugo
+
+# Delete a key, or the whole config
+DELETE,app.yml,DEFAULT_GROUP,dev,timeout,,YAML,drop key,hugo
+DELETE,app.yml,DEFAULT_GROUP,dev,,,YAML,drop config,hugo
 ```
 
-Results in:
+## Execution Log
 
-```yaml
-server:
-  host: localhost
-  port: 8080
-```
+Applied scripts are tracked in two MySQL tables, created automatically on first run.
 
-YAML lists (sequences of objects) are also preserved through the flatten/assemble round-trip:
+**`nacosbase_changelog`** — one row per script:
 
-```yaml
-roles:
-  - roleName: PAYER
-    accountType: EPS
-  - roleName: LABEL_OWNER
-    accountType: EPS
-```
+| Column | Description |
+|--------|-------------|
+| `script_name` | CSV filename (unique key) |
+| `checksum` | SHA-256 of file content for tamper detection |
+| `status` | `SUCCESS` / `FAILED` / `ROLLED_BACK` |
+| `applied_at` / `applied_by` / `execution_ms` | When, who, how long |
+| `rollback_data` | JSON snapshot of pre-change configs |
+| `rolled_back_at` | Set when rolled back |
 
-### APPEND and DELETE list-value examples
+**`nacosbase_changelog_item`** — one row per changeset within a script:
 
-```csv
-# Append items to a list key (each row is independent)
-APPEND,app.yml,DEFAULT_GROUP,dev,servers,192.168.1.1,YAML,add server,hugo
-APPEND,app.yml,DEFAULT_GROUP,dev,servers,192.168.1.2,YAML,add server,hugo
+| Column | Description |
+|--------|-------------|
+| `changelog_id` | FK → `nacosbase_changelog.id` |
+| `action` | `ADD` / `MODIFY` / `DELETE` / `APPEND` |
+| `data_id` / `config_group` / `namespace` | Target config coordinates |
+| `content` / `type` | Assembled content and format |
+| `description` / `operator` / `target_key` | Audit metadata |
 
-# Delete a specific item from a list
-DELETE,app.yml,DEFAULT_GROUP,dev,servers,192.168.1.1,YAML,remove server,hugo
-
-# Delete an entire key (value left blank)
-DELETE,app.yml,DEFAULT_GROUP,dev,timeout,,YAML,remove key,hugo
-
-# Delete the whole config (key and value both blank)
-DELETE,app.yml,DEFAULT_GROUP,dev,,,YAML,remove config,hugo
-```
+Items are replaced atomically with their parent record on every upsert.
 
 ## Modules
 
@@ -229,33 +157,17 @@ nacosbase-cli → nacosbase-infra → nacosbase-core
 
 | Module | Description |
 |--------|-------------|
-| `nacosbase-core` | Pure domain layer: models, port interfaces, `ChangeEngine`, `ConfigValidator` |
+| `nacosbase-core` | Domain layer: models, port interfaces, `ChangeEngine`, `ConfigValidator` |
 | `nacosbase-infra` | Adapters: Nacos SDK, MySQL/Exposed ORM, CSV loader, YAML config loader |
 | `nacosbase-cli` | CLI fat-jar (Clikt): six commands assembled via `AppContext` |
 
 ## Build & Test
 
 ```bash
-# Build all modules
 ./gradlew build
-
-# Run all tests
 ./gradlew test
-
-# Run tests for a specific module
-./gradlew :nacosbase-core:test
-./gradlew :nacosbase-infra:test      # requires Docker for Testcontainers (MySQL)
-./gradlew :nacosbase-cli:test
-
-# Run a single test class
+./gradlew :nacosbase-infra:test      # requires Docker (Testcontainers + MySQL)
 ./gradlew :nacosbase-core:test --tests "com.nacosbase.core.engine.ChangeEngineTest"
-
-# Build CLI fat-jar
-./gradlew :nacosbase-cli:shadowJar
 ```
 
-> **Note:** `nacosbase-infra` integration tests require Docker. Tests are automatically skipped when Docker is unavailable.
-
-## Inspiration
-
-nacosbase draws heavily from [Liquibase](https://www.liquibase.org/). If you have used Liquibase for database migrations, the mental model transfers directly: write numbered change scripts, run `update` to apply them, and use `rollback` to revert.
+> `nacosbase-infra` integration tests require Docker and skip automatically when unavailable.

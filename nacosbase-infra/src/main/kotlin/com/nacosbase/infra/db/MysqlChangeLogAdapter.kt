@@ -26,8 +26,16 @@ class MysqlChangeLogAdapter(private val db: Database) : ChangeLogPort {
 
     override fun saveRecord(record: ChangeRecord) {
         transaction(db) {
+            val existingId = ChangelogTable
+                .selectAll()
+                .where { ChangelogTable.scriptName eq record.scriptName }
+                .singleOrNull()?.get(ChangelogTable.id)
+            if (existingId != null) {
+                ChangelogItemTable.deleteWhere { changelogId eq existingId }
+            }
             ChangelogTable.deleteWhere { scriptName eq record.scriptName }
-            ChangelogTable.insert {
+
+            val newId = ChangelogTable.insert {
                 it[scriptName]   = record.scriptName
                 it[checksum]     = record.checksum
                 it[appliedAt]    = record.appliedAt.toLocalDateTimeUtc()
@@ -35,6 +43,21 @@ class MysqlChangeLogAdapter(private val db: Database) : ChangeLogPort {
                 it[executionMs]  = record.executionMs
                 it[status]       = record.status.name
                 it[rollbackData] = record.rollbackData
+            }[ChangelogTable.id]
+
+            for (item in record.items) {
+                ChangelogItemTable.insert {
+                    it[changelogId] = newId
+                    it[action]      = item.action.name
+                    it[dataId]      = item.dataId
+                    it[configGroup] = item.group
+                    it[namespace]   = item.namespace
+                    it[content]     = item.content
+                    it[type]        = item.type?.name
+                    it[description] = item.description
+                    it[operator]    = item.operator
+                    it[targetKey]   = item.targetKey
+                }
             }
         }
     }
