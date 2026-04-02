@@ -48,7 +48,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: nacosbase ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           body: |
             ### Installation
 
@@ -76,7 +76,7 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
 
       - name: Publish CLI to GitHub Packages
-        run: ./gradlew :nacosbase-cli:publishReleasePublicationToGitHubPackagesRepository -Pnacosbase.version=${{ steps.version.outputs.VERSION }} --no-daemon
+        run: ./gradlew :nacosbase-cli:publishReleasePublicationToGitHubPackagesRepository -Pnacosbase.version=${{ steps.version.outputs.VERSION }} --no-daemon --no-configuration-cache
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -85,7 +85,7 @@ jobs:
         run: |
           ./gradlew :nacosbase-core:publishReleasePublicationToStagingRepository \
                     :nacosbase-infra:publishReleasePublicationToStagingRepository \
-                    -Pnacosbase.version=${{ steps.version.outputs.VERSION }} --no-daemon
+                    -Pnacosbase.version=${{ steps.version.outputs.VERSION }} --no-daemon --no-configuration-cache
           cd build/staging-repo
           zip -r ../../maven-bundle.zip .
           cd ../..

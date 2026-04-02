@@ -2,6 +2,8 @@ name: Upload coverage reports to Codecov
 
 on:
   push:
+    branches:
+      - '**'
     paths-ignore:
       - 'docs/**'
       - '**.md'
@@ -12,7 +14,6 @@ on:
 
 jobs:
   run:
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
